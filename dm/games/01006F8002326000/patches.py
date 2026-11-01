@@ -6,7 +6,7 @@
 # present_viewport): a wider 3D view at its own proportions, the layouts centred at theirs.
 OBS = {
     'ff1d1c05670db6021c85b624a710b963': [   # 3.0.3
-        (0x37e5968, 26 | 0xb0 << 8, 'bd409800', 'PerspectiveProjection matrix update entry: a 16:9 aspect at x0 + 0xb0 → the screen\'s (OBS_PROJ_ASPECT)'),
+        (0x37e5968, 27 | 0xb0 << 8, 'bd409800', 'PerspectiveProjection matrix update entry: a 16:9 aspect at x0 + 0xb0 → the screen\'s (OBS_PROJ_ASPECT)'),
     ],
 }
 

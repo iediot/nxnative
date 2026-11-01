@@ -4,7 +4,7 @@
 # (OBS_PROJ_ASPECT, parameter 0xb0: hle_oe.c), and the front end stretches the 16:9 picture over the screen (profile screen_fill)
 OBS = {
     '158c0c7399aabd7bf83795c2ef3484c7': [   # 4.0.1
-        (0x61bfa4, 26 | 0xb0 << 8, 'bd409801', 'PerspectiveProjection matrix update entry: a 16:9 aspect at x0 + 0xb0 → the screen\'s (OBS_PROJ_ASPECT)'),
+        (0x61bfa4, 27 | 0xb0 << 8, 'bd409801', 'PerspectiveProjection matrix update entry: a 16:9 aspect at x0 + 0xb0 → the screen\'s (OBS_PROJ_ASPECT)'),
     ],
 }
 
