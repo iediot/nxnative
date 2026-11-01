@@ -224,7 +224,7 @@ def pack(a):
         minos = min_os(a.host)
         sources = [Path(__file__).resolve(), HERE / 'launcher.c', HERE.parent / 'host/romfs_image.h', HERE.parent / 'host/save_sync.c', HERE.parent / 'host/save_sync.h', HERE.parent / 'tools/romfs.py'] + swift_sources()
         inputs = {'options': vars(a), 'files': [(str(p), p.stat().st_mode, digest(p), os.readlink(p) if p.is_symlink() else None) for p in files + sources],
-                  'trees': [(p, inventory(Path(p))) for p in (a.romfs, a.aoc, a.game_mods) if p],
+                  'trees': [(p, inventory(Path(p))) for p in (a.romfs, a.aoc, a.game_mods, str(Path(a.patched) / 'codemods')) if p and Path(p).exists()],
                   'tools': [[str(c), c.stat().st_mode, c.stat().st_size, c.stat().st_mtime_ns, c.stat().st_ctime_ns, run([c, '--version']).strip()] for c in (clang, swiftc)] + [
                             str(sdk), run(['xcrun', '--sdk', 'macosx', '--show-sdk-version']).strip(),
                             str(codesign), codesign.stat().st_mode, digest(codesign), minos]}
@@ -252,6 +252,7 @@ def pack(a):
     build_launcher(mac / EXE, minos, clang, swiftc, sdk)
     shutil.copy2(a.host, mac / 'dmhost')
     copy(mods, dm, clone['mods'])
+    if (Path(a.patched) / 'codemods').is_dir(): copy([Path(a.patched) / 'codemods'], dm / 'codemods', clone['mods'])   # the modules rewritten with the mods' code patches (loader.c)
     if tables: copy(tables, dm, False)
     if pairs: shutil.copyfile(pairs, dm / 'pso_pairs.tsv')   # the split's copy, for a profile without the table
     if fonts: copy(fonts, dm / 'font', False)

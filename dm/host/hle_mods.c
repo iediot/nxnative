@@ -6,8 +6,12 @@
 // <title ID>/<mod>/ (yuzu's load folder), at the top of a mods folder or inside a mod's own folder. Mods come in DM_MODS order, each folder's in name order, and
 // the first mod that has a file is the one the game reads (DM_ROMFS_OVERLAY's folders before all of them).
 // Code patches are applied by the rewriter when the app is built (scripts/build_ipa_from_nsp.py --mods; patch_nso.py DM_EXEFS_PATCHES), since the code the game runs
-// is rewritten and signed then. A mod packed that way carries dm_code.tsv (the patches applied) and is always on; any other mod with code patches is skipped whole
-// with a note, as its files without its code can break the game (a 60 fps mod's parameters without its frame-rate patch run the game at half speed).
+// is rewritten and signed then: the modules they change are rewritten twice, without and with them, and the build carries both (the second in codemods/). A mod packed
+// that way carries dm_code.tsv (the patch files applied); the mods with code patches switch on and off together, as one copy holds all their patches, and the loader
+// takes that copy only while all of them are on (loader.c). Any other mod with code patches is skipped whole with a note, as its files without its code can break the
+// game (a 60 fps mod's parameters without its frame-rate patch run the game at half speed).
+// A mod may also carry env.txt, KEY=VALUE lines of host settings it needs, set while it is on (dm_mods_env; an env file or the launch environment wins): a 60 fps
+// mod's DM_PRESENT_INTERVAL=display does what its SDK frame-rate patch does on a Switch, as the host paces presents itself.
 #include "dm.h"
 #include "mods.h"
 #include <dirent.h>
@@ -17,6 +21,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+__attribute__((weak)) int dm_code_mods_loaded;   // loader.c's, when it is linked in (the unit tests have no loader)
 #define MAX_MODS 128
 typedef struct { char name[256]; char dir[1024]; int kind; } mod_t;
 static mod_t g_mods[MAX_MODS];
@@ -124,9 +129,34 @@ static int switched_off(const char *name) {
     }
     return 0;
 }
+static int code_wanted(void) {   // over the current scan: at least one mod with built-in code patches, and none of them switched off
+    int any = 0;
+    for (int i = 0; i < g_n; i++) if (g_mods[i].kind == DM_MOD_BUILT_IN) { if (switched_off(g_mods[i].name)) return 0; any = 1; }
+    return any;
+}
+int dm_mods_code_wanted(void) { dm_mods_scan(); return code_wanted(); }
 int dm_mod_on(int i) {
     if (i < 0 || i >= g_n) return 0;
-    return g_mods[i].kind == DM_MOD_BUILT_IN || (g_mods[i].kind == DM_MOD_FILES && !switched_off(g_mods[i].name));
+    return g_mods[i].kind == DM_MOD_BUILT_IN ? code_wanted() : g_mods[i].kind == DM_MOD_FILES && !switched_off(g_mods[i].name);
+}
+void dm_mods_env(void) {
+    int n = dm_mods_scan();
+    for (int i = 0; i < n; i++) {
+        if (!dm_mod_on(i)) continue;
+        char p[1100]; snprintf(p, sizeof p, "%s/env.txt", g_mods[i].dir);
+        FILE *f = fopen(p, "r"); if (!f) continue;
+        char line[1024];
+        while (fgets(line, sizeof line, f)) {
+            char *s = line; while (*s == ' ' || *s == '\t') s++;
+            s[strcspn(s, "\r\n")] = 0;
+            char *eq = strchr(s, '=');
+            if (!*s || *s == '#' || !eq || eq == s) continue;
+            *eq = 0;
+            if (getenv(s)) { LOG("mods: %s: %s stays %s (set before; the mod's env.txt has %s)", g_mods[i].name, s, getenv(s), eq + 1); continue; }
+            setenv(s, eq + 1, 1); LOG("mods: %s: %s=%s (its env.txt)", g_mods[i].name, s, eq + 1);
+        }
+        fclose(f);
+    }
 }
 
 const char *dm_mods_overlay(char *buf, unsigned n) {
@@ -140,15 +170,15 @@ const char *dm_mods_overlay(char *buf, unsigned n) {
         case DM_MOD_EMPTY: why = "no files in romfs/ or exefs/"; break;
         case DM_MOD_NEEDS_BUILD: why = "it has code patches (exefs/), which are applied only when the app is built (build_ipa_from_nsp.py --mods): skipped whole"; break;
         case DM_MOD_FILES: if (switched_off(m->name)) why = "switched off (DM_MODS_OFF)"; break;
-        case DM_MOD_BUILT_IN: if (switched_off(m->name)) LOG("mods: %s: its code patches are part of this build, so it stays on (DM_MODS_OFF names it)", m->name); break;
+        case DM_MOD_BUILT_IN: if (!dm_code_mods_loaded) why = code_wanted() ? "its code patches are not in the modules the game loaded (no codemods copy)" : "switched off, with the other mods with code patches (DM_MODS_OFF)"; break;
         }
         if (!why && strchr(m->dir, ':')) why = "its path has a ':', which separates the overlay folders";
-        if (why) { LOG("%smods: %s (%s): %s", m->kind == DM_MOD_FILES || m->kind == DM_MOD_BUILT_IN ? "" : "[RED] ", m->name, m->dir, why); continue; }
-        if (!is_dir(romfs)) { LOG("mods: %s: on (code patches only, applied when the app was built)", m->name); on++; continue; }
+        if (why) { LOG("%smods: %s (%s): %s", m->kind == DM_MOD_FILES || (m->kind == DM_MOD_BUILT_IN && !code_wanted()) ? "" : "[RED] ", m->name, m->dir, why); continue; }
+        if (!is_dir(romfs)) { LOG("mods: %s: on (code patches only)", m->name); on++; continue; }
         size_t len = strlen(buf);
         if (len + 1 + strlen(romfs) + 1 > n) { LOG("[RED] mods: %s: no room left in the overlay list (%u bytes): skipped", m->name, n); continue; }
         snprintf(buf + len, n - len, "%s%s", len ? ":" : "", romfs);
-        LOG("mods: %s: on%s (%s)", m->name, m->kind == DM_MOD_BUILT_IN ? ", built in" : "", romfs); on++;
+        LOG("mods: %s: on%s (%s)", m->name, m->kind == DM_MOD_BUILT_IN ? ", with its code patches" : "", romfs); on++;
     }
     if (found) LOG("mods: %d found, %d on", found, on);
     return buf;

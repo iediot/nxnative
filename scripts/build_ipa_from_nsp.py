@@ -2287,10 +2287,24 @@ def prepare_mods(repo, folders, app, env):
     for m in found:
         if m.other: raise BuildError(f'--mods: {m.name} replaces code modules ({", ".join(p.name for p in m.other[:4])}): mods that bring their own code (exlaunch, subsdk) are not supported, only code patches (.pchtxt, .ips)')
         say(f'mod: {m.name} ({m.dir}): ' + ', '.join(filter(None, ['replacement files' if m.romfs else '', f'{len(m.patches)} code patch files' if m.patches else ''])) or 'nothing to apply')
-    patches = [str(p) for m in found for p in m.patches]
-    if patches: env['DM_EXEFS_PATCHES'] = ':'.join(patches)
-    else: env.pop('DM_EXEFS_PATCHES', None)
     return found
+
+
+def rewrite_code_mods(py, repo, exe_dir, patched, env, logs, g, found, provisional):
+    """The mods' code patches (DM_EXEFS_PATCHES): the modules rewritten a second time with them, into <patched>_codemods (cached as the first rewrite is), and the modules
+    they changed (those with a <module>.mods.tsv) copied into <patched>/codemods, which the host loads from while those mods are on (loader.c, hle_mods.c)"""
+    out, dst = patched.with_name(patched.name + '_codemods'), patched / 'codemods'
+    rmtree(dst)
+    patches = [str(p) for m in found for p in m.patches]
+    if not patches: rmtree(out); return out
+    PROG.add(1); rewrite(py, repo, exe_dir, out, dict(env, DM_EXEFS_PATCHES=':'.join(patches)), logs, g, provisional)
+    changed = sorted(t.name.removesuffix('.mods.tsv') for t in out.glob('*.mods.tsv'))
+    dst.mkdir()
+    for name in changed:
+        for f in out.glob(f'{name}.*'):
+            if subprocess.run(['cp', '-c', str(f), str(dst / f.name)], capture_output=True).returncode: shutil.copy2(f, dst / f.name)
+    say(f'mods: code patches in a second copy of {", ".join(changed) or "no module"} ({dst}), loaded while those mods are on')
+    return out
 
 
 def finish_mods(repo, found, patched, work):
@@ -2299,12 +2313,12 @@ def finish_mods(repo, found, patched, work):
     out = work / 'mods'
     if not found: rmtree(out); return None
     import mods as modlib
-    applied = modlib.applied_files(patched)
+    applied = modlib.applied_files(patched.with_name(patched.name + '_codemods'))
     for m in found:
         if m.patches and not any(str(p) in applied for p in m.patches):
             raise BuildError(f'--mods: none of {m.name}\'s code patches fit this version of the game ({", ".join(p.name for p in m.patches[:4])}{"…" if len(m.patches) > 4 else ""}): it is made for another version')
     for name, nfiles, ncode in modlib.stage(found, applied, out):
-        say(f'mod: {name}: ' + ', '.join(filter(None, [f'{nfiles} files' if nfiles else '', f'code patches from {ncode} files applied (always on)' if ncode else ''])))
+        say(f'mod: {name}: ' + ', '.join(filter(None, [f'{nfiles} files' if nfiles else '', f'code patches from {ncode} files, in the second copy (switched with the mod)' if ncode else ''])))
     return out
 
 
@@ -2595,6 +2609,7 @@ def main(args=None):
     patched = work / f'patched_{pkg_ver}'
     game_mods = prepare_mods(repo, mod_folders(args), app, env)
     g = rewrite(py, repo, game / 'ExeFS', patched, env, logs, g, provisional)
+    rewrite_code_mods(py, repo, game / 'ExeFS', patched, env, logs, g, game_mods, provisional)
     mods_dir = finish_mods(repo, game_mods, patched, work)
     chain_header(py, repo, env, logs)   # before any host is built
     if provisional or derived:   # the keys that need the rewritten modules, then (provisional) the heap check (both only change keys the host is built with, not the rewrite or the shader steps)

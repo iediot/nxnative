@@ -112,8 +112,14 @@ final class ModsModel: ObservableObject {
         fputs("launcher: mod folder \(url.lastPathComponent) added (\(added.map(\.name).joined(separator: ", ")))\n", stderr)
         return "Added: " + added.map(\.name).joined(separator: ", ") + "."
     }
-    func isOn(_ m: Mod) -> Bool { m.kind == DM_MOD_BUILT_IN || (m.kind == DM_MOD_FILES && !off.contains(m.name)) }
-    func set(_ m: Mod, on: Bool) { if on { off.remove(m.name) } else { off.insert(m.name) } }
+    // The mods with code patches built in switch together: the app carries one copy of the modules with all their patches (hle_mods.c)
+    var code: [Mod] { mods.filter { $0.kind == DM_MOD_BUILT_IN } }
+    func isOn(_ m: Mod) -> Bool {
+        m.kind == DM_MOD_BUILT_IN ? !code.contains { off.contains($0.name) } : m.kind == DM_MOD_FILES && !off.contains(m.name)
+    }
+    func set(_ m: Mod, on: Bool) {
+        for x in m.kind == DM_MOD_BUILT_IN ? code : [m] { if on { off.remove(x.name) } else { off.insert(x.name) } }
+    }
     // Before the game starts. Names of mods that are gone stay in the list, so a mod taken out and put back keeps its switch
     func apply(save: Bool = true) {
         if fixed { fputs("launcher: DM_MODS_OFF kept (env file or launch environment)\n", stderr); return }
@@ -137,7 +143,10 @@ private struct ModsSection: View {
                 case DM_MOD_FILES:
                     Toggle(mod.name, isOn: Binding(get: { m.isOn(mod) }, set: { m.set(mod, on: $0) })).disabled(m.fixed)
                 case DM_MOD_BUILT_IN:
-                    row(mod.name, "Built in", note: "Its code patches are part of this app, so it is always on.")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Toggle(mod.name, isOn: Binding(get: { m.isOn(mod) }, set: { m.set(mod, on: $0) })).disabled(m.fixed)
+                        Text(m.code.count > 1 ? "Has code patches: switches on and off with the other mods that have them." : "Has code patches: off runs the game's own code.").font(.caption).foregroundStyle(.secondary)
+                    }
                 case DM_MOD_NEEDS_BUILD:
                     row(mod.name, "Off", note: "It has code patches, which go in only when the app is built: rebuild with --mods.")
                 default:

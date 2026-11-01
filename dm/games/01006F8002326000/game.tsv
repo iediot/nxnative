@@ -27,10 +27,6 @@ fill_uv_scale	17dccd27ad609e8b_b:0:0x60
 # touches reach the game docked too, so its software keyboard takes taps at the docked 1080p picture (handheld would drop it to 720p)
 touch_docked	on
 
-# one frame per display refresh whatever interval the game sets: the host's counterpart of the 60 FPS SpeedFix mod's SDK enabler (README.md, Frame rate). Without the mod's
-# code and parameter patches (built in with --mods) the game then runs at double speed: its logic counts frames
-present_interval	display
-
 # ---- Versions ----
 # only the merged 3.0.3 copy is extracted; the base game's own build IDs are added when needed
 build	v2228224	3.0.3	main=ff1d1c05670db6021c85b624a710b963	subsdk0=6c6ceace7be94107a8bd440bc2d60704	sdk=a226048605d3597f90cb1067d141cd36

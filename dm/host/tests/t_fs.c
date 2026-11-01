@@ -90,6 +90,8 @@ int main(void) {
         for (int i = 0; i < n; i++) { kinds[dm_mod_kind(i)]++; strlcat(names, dm_mod_name(i), sizeof names); strlcat(names, " ", sizeof names); }
         CHECK(n == 7 && !strcmp(names, "Ryu Alpha Beta Built Code Empty Pack "), "mods found in every layout (the trees at the top of the folder first, then name order), another game's left out (%d: %s)", n, names);
         CHECK(kinds[DM_MOD_FILES] == 4 && kinds[DM_MOD_BUILT_IN] == 1 && kinds[DM_MOD_NEEDS_BUILD] == 1 && kinds[DM_MOD_EMPTY] == 1, "kinds: 4 files, 1 built in, 1 needing a build, 1 empty");
+        CHECK(dm_mods_code_wanted(), "the mods with code patches are wanted while none is switched off");
+        dm_code_mods_loaded = 1;   // as the loader does when it takes the codemods copy
         CHECK(h_fs_MountRom("rom", NULL, 0) == RES_OK, "mount RomFS with the mods");
         CHECK(read_fs("rom:/data/same", got, sizeof got) && !strcmp(got, "alpha"), "the first mod by name wins a file both have");
         CHECK(read_fs("rom:/data/new", got, sizeof got) && !strcmp(got, "beta-new"), "a mod adds a file the game lacks");
@@ -100,7 +102,20 @@ int main(void) {
         g_nmnt = 0;
         setenv("DM_MODS_OFF", "Alpha/Built", 1); CHECK(h_fs_MountRom("rom", NULL, 0) == RES_OK, "mount with DM_MODS_OFF=Alpha/Built");
         CHECK(read_fs("rom:/data/same", got, sizeof got) && !strcmp(got, "beta"), "a switched-off mod is not read: the next one wins");
-        CHECK(read_fs("rom:/data/built", got, sizeof got), "a built-in mod stays on (its code patches are in the build)");
+        CHECK(!dm_mods_code_wanted(), "a switched-off mod with code patches: the loader takes the game's own code");
+        dm_code_mods_loaded = 0;
+        g_nmnt = 0; CHECK(h_fs_MountRom("rom", NULL, 0) == RES_OK && !read_fs("rom:/data/built", got, sizeof got), "its files are not read either");
+        unsetenv("DM_MODS_OFF"); dm_code_mods_loaded = 0; g_nmnt = 0;
+        CHECK(h_fs_MountRom("rom", NULL, 0) == RES_OK && !read_fs("rom:/data/built", got, sizeof got), "wanted, but the loaded modules lack the code patches: its files stay out");
+        {   // env.txt of a mod that is on goes into the environment, without overriding what is set
+            char e[1600]; snprintf(e, sizeof e, "%s/Beta/env.txt", m); put(e, "# comment\nNXMODTEST_SET=on\nNXMODTEST_KEEP=mod\n");
+            snprintf(e, sizeof e, "%s/Alpha/env.txt", m); put(e, "NXMODTEST_OFF=1\n");
+            setenv("NXMODTEST_KEEP", "user", 1); setenv("DM_MODS_OFF", "Alpha", 1); unsetenv("NXMODTEST_SET"); unsetenv("NXMODTEST_OFF");
+            dm_mods_env();
+            CHECK(getenv("NXMODTEST_SET") && !strcmp(getenv("NXMODTEST_SET"), "on") && !strcmp(getenv("NXMODTEST_KEEP"), "user") && !getenv("NXMODTEST_OFF"),
+                  "a mod's env.txt sets what nothing set before; a switched-off mod's does not");
+            unsetenv("NXMODTEST_SET"); unsetenv("NXMODTEST_KEEP"); unsetenv("DM_MODS_OFF");
+        }
         g_nmnt = 0;
         setenv("DM_ROMFS_OVERLAY", overlay, 1); CHECK(h_fs_MountRom("rom", NULL, 0) == RES_OK && read_fs("rom:/data/same", got, sizeof got) && !strcmp(got, "overlay"), "DM_ROMFS_OVERLAY's folders come before the mods");
         g_nmnt = 0;

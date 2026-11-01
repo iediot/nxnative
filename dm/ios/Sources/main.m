@@ -188,7 +188,9 @@ static int boot_env(void) {
     if ([fm fileExistsAtPath:pso]) setenv("DM_PSO_BUNDLE", pso.fileSystemRepresentation, 0);
     chdir(doc.fileSystemRepresentation);
     g_argv[0] = strdup("dmhost"); g_argv[1] = strdup(dm.fileSystemRepresentation); g_argc = 2;
-    dm_host_preload_start(g_argc, g_argv);   // Module tables / relocation / takeover run early in the background, in parallel with UIKit startup (and the launcher: the settings it sets are read when the game starts)
+    // With a codemods copy of the modules (mods with code patches, dm/host/hle_mods.c) the loader must know the launcher's Mods switches first: loading waits for Play then
+    if ([fm fileExistsAtPath:[dm stringByAppendingPathComponent:@"codemods"]]) fprintf(stderr, "boot: host loading after the launcher (the app has mods with code patches)\n");
+    else dm_host_preload_start(g_argc, g_argv);   // Module tables / relocation / takeover run early in the background, in parallel with UIKit startup (and the launcher: the settings it sets are read when the game starts)
     return 1;
 }
 static int g_boot_ok;

@@ -89,8 +89,9 @@ def stage(mods, applied, out):
         if m.romfs:
             if subprocess.run(['cp', '-c', '-R', str(m.romfs), str(d / 'romfs')], capture_output=True).returncode: shutil.copytree(m.romfs, d / 'romfs')
             nfiles = sum(1 for _ in _files(d / 'romfs'))
+        if (m.dir / 'env.txt').is_file(): shutil.copyfile(m.dir / 'env.txt', d / 'env.txt')   # the host settings the mod needs while it is on (hle_mods.c dm_mods_env)
         mine = [p for p in m.patches if str(p) in applied]
-        if mine: (d / 'dm_code.tsv').write_text('# code patches applied when the app was built (scripts/build_ipa_from_nsp.py --mods): the mod is always on\n' + ''.join(f'{p.name}\n' for p in mine))
+        if mine: (d / 'dm_code.tsv').write_text('# code patches in the build\'s codemods copy of the modules (scripts/build_ipa_from_nsp.py --mods): on with the other mods that have them\n' + ''.join(f'{p.name}\n' for p in mine))
         rows.append((m.name, nfiles, len(mine)))
     return rows
 

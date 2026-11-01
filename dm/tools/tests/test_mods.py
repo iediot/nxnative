@@ -113,6 +113,7 @@ class Finding(unittest.TestCase):
 
     def test_stage(self):
         a = write(self.d, 'src/Speed/exefs/speedfix_main.pchtxt'); write(self.d, 'src/Speed/romfs/Pack/x.pack', 'p'); write(self.d, 'src/Look/romfs/a/b.bin', 'b')
+        write(self.d, 'src/Speed/env.txt', 'DM_PRESENT_INTERVAL=display\n')
         write(self.d, 'src/Unused/exefs/old.pchtxt')
         found = mods.find(self.d / 'src', TID)
         out = self.d / 'out'; write(out, 'stale/romfs/x')
@@ -122,6 +123,7 @@ class Finding(unittest.TestCase):
         self.assertEqual((out / 'Look/romfs/a/b.bin').read_text(), 'b')
         self.assertTrue((out / 'Speed/dm_code.tsv').read_text().endswith('speedfix_main.pchtxt\n'))
         self.assertFalse((out / 'Look/dm_code.tsv').exists())
+        self.assertEqual((out / 'Speed/env.txt').read_text(), 'DM_PRESENT_INTERVAL=display\n')
 
     def test_applied_files(self):
         write(self.d, 'p/main.mods.tsv', '# header\n0x10\t00\t11\t/m/a.pchtxt\n0x20\t00\t11\t/m/b.ips\n'); write(self.d, 'p/sdk.mods.tsv', '0x0\t00\t11\t/m/c.pchtxt\n')
