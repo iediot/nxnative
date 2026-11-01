@@ -20,7 +20,7 @@ On the Mac: a new game through Tom Nook's counter (name entry on the game's own 
 
 ## Screen fill
 
-Current (3.0.3; Mac with `DM_SCREEN_ASPECT=2.1667` and the phone's save; iPhone reports below). The gate in [`patches.py`](patches.py) widens sead's PerspectiveProjection; the layouts are extended by `dm/tools/ui_extend.py <RomFS> <out> --aspect 2.1667 --screen` into a RomFS overlay, packed after the 60 fps mod's files (`DM_ROMFS_OVERLAY=<romfs60>:<layouts>`).
+Current (3.0.3; Mac with `DM_SCREEN_ASPECT=2.1667` and the phone's save; iPhone reports below). The gate in [`patches.py`](patches.py) widens sead's PerspectiveProjection; the layouts are extended by `dm/tools/ui_extend.py <RomFS> <out> --aspect 2.1667 --screen` (`--move-aspect 1.95 --keep N_HaveNum_00` in the current build) into a folder that the NSP script builds in as a mod (`--mods "<work>/mods/Full-screen menus"`, its layouts under `romfs/`), switchable on the start screen. The 60 fps mod goes in the same way: the Ryujinx download's `ACNH 60 FPS + SpeedFix` folder (code patches and villager tables) and its `StaticParam.pack.ips` applied to the game's own file (`tools/apply_ips.py`) as a mod of its own (`ACNH 60 FPS params`); `present_interval display` in the profile does what the mod's SDK enabler does on a Switch, since the host paces presents itself.
 
 - Reported from the iPhone and resolved in the tool (checked on the Mac with the phone's save where reachable):
   - The passport (`LProfileBtn`) slid right and off the screen: it is a part that declares a 1920 x 1080 screen and that `LProfileBtnList` places at x 0 and 1919 (the carousel's next page). A part some layout places off centre is no longer extended, and nothing wholly off the screen moves.
