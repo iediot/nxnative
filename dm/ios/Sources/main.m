@@ -178,6 +178,11 @@ static int boot_env(void) {
     setenv("DM_NVN_SHMAP", [dm stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation, 0);
     setenv("DM_MSL_DIR", [res stringByAppendingPathComponent:@"msl"].fileSystemRepresentation, 0);
     setenv("DM_FONT_DIR", [dm stringByAppendingPathComponent:@"font"].fileSystemRepresentation, 0);   // Shared-font stand-ins (standard.ttf / nintendo_ext.ttf): iOS lacks the macOS font path
+    {   // mods (dm/host/hle_mods.c): the ones the app was built with (dm/mods), then the player's in Documents/mods, made here so the Files app shows the folder to drop them in
+        NSString *mine = [doc stringByAppendingPathComponent:@"mods"];
+        [fm createDirectoryAtPath:mine withIntermediateDirectories:YES attributes:nil error:nil];
+        setenv("DM_MODS", [NSString stringWithFormat:@"%@:%@", [dm stringByAppendingPathComponent:@"mods"], mine].fileSystemRepresentation, 0);
+    }
     aoc_locate();   // add-on content: Documents/aoc, else <App>/aoc; an empty Documents/aoc explicitly selects no DLC
     NSString *pso = [res stringByAppendingPathComponent:@"pso"];   // the pipeline archive made offline (build_ipa.sh, dm/gfx/tools/pso_offline.py): the shader pairs' bases, which the device then does not build
     if ([fm fileExistsAtPath:pso]) setenv("DM_PSO_BUNDLE", pso.fileSystemRepresentation, 0);
