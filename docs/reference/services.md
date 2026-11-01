@@ -439,8 +439,15 @@ Most service calls can be found before they crash, before the first boot or the 
 
 - **Symptom:** SIGSEGV in `android::Surface::getQueuedFrameNumber` under `nn::vi::GetLatestFrameNumber`.
 - **Cause:** Unreal paces frames by the layer's frame number (`main+0x10140e8`); the SDK reads the vi service's surface, which the host never made.
-- **Fix:** `hle_vi.c` answers with the frames presented so far; `ListFrameHistory` returns no entries.
+- **Fix:** `hle_vi.c` answers with the frames presented so far; `ListFrameHistory` with the latest of them ([Layer frame history](#layer-frame-history)).
 - **Found on:** [Octopath Traveler 0](../../dm/games/01005270232F2000/README.md).
+
+### Layer frame history
+
+- **Symptom:** the game hangs after its first frames (Minecraft Dungeons II: right after the startup movie, or at the first load with `-nomoviestartup`); the thread dump shows the game thread in a condition-variable wait under Unreal's render fence, the render and RHI threads idle, and after 120 s Unreal gives up: "GameThread timed out waiting for RenderThread".
+- **Cause:** Unreal's Switch RHI learns which frames reached the screen from `vi::ListFrameHistory`: its "Viewport Thread" asks after every vsync event (count first, with no buffer, then the entries) and hands the newest entry in state 2 with a frame number it has not seen to its flip tracking ("RHIFrameFlipThread"), which completes the fences that wait for the swap chain (`FRenderCommandFence` with `ESyncDepth::Swapchain`). The host returned no entries, so no frame ever flipped and the first such fence never completed.
+- **Fix:** `hle_vi.c` answers one entry, the latest frame presented: state 2, the frame number `GetLatestFrameNumber` gives, and its present time as two 19.2 MHz system ticks (flip and vblank time). `FrameInfo` is 0x28 bytes, as the game's loop reads it: u64 state at +0, u64 frame number at +8, the ticks at +0x18 and +0x20.
+- **Found on:** Minecraft Dungeons II (Unreal 5.6, SDK 20.5; provisional profile, `main+0x142afb0`).
 
 ### Default display panel identifier
 

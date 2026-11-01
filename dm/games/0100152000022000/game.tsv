@@ -18,6 +18,11 @@ ipa	MarioKart8Deluxe.ipa
 app_category	public.app-category.racing-games
 # the race records SetRenderEnableConditional as a course loads: evaluated at replay, as on the GPU (drawn anyway, the same race route at the same frames looked the same; evaluated is NVN's behaviour)
 render_cond	on
+# iPhone: the 16:9 picture stretched over the screen, the perspective projections widened by the gate in patches.py (README.md, Screen fill)
+screen_fill	on
+# iPhone: pipelines through MTL4Compiler with the pipeline archive made offline (README.md, Pipelines on the iPhone): without it a 4.0.1 iPhone session compiled
+# new pipelines in the race, 50-130 ms frames the first time an effect or course appeared
+pso_mtl4	on
 
 # ---- Versions ----
 # both merged update copies are extracted; the base game's own build IDs are added when needed

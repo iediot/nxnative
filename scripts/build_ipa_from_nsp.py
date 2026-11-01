@@ -741,6 +741,36 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
 
 
 # ---- Provisional profile (a game with no profile in dm/games) ----
+def romfs_for_ipa(game, work, env):
+    """The game files the IPA packs: the extraction's RomFS image, or with DM_ROMFS_OVERLAY=<folder>[:<folder>...] (folders of replacement game files, as the host
+    reads them on the Mac: a mod's romfs folder, dm/tools/ui_extend.py's extended layouts) a copy of the image with the folders' files written over theirs, an earlier
+    folder winning: <build folder>/romfs_overlay/RomFS.img, an APFS clone of the image (only the replaced blocks take space). Each file must replace one of the game's;
+    one of the same size is written in place, a resized one after the data with the index written again (romfs_image.overlay). Reused while the image and the folders
+    are unchanged"""
+    src = rfs.source(game); ov = env.get('DM_ROMFS_OVERLAY')
+    if not ov: return src
+    img = Path(str(src))
+    if not img.is_file(): raise BuildError(f'DM_ROMFS_OVERLAY needs the extraction as a RomFS image, and {img} is not one')
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'dm/tools')); import romfs_image
+    chosen = {}
+    for d in [Path(x) for x in ov.split(':') if x]:
+        for p in sorted(q for q in d.rglob('*') if q.is_file() and not q.name.startswith('.')): chosen.setdefault(p.relative_to(d).as_posix(), p)
+    if not chosen: raise BuildError(f'DM_ROMFS_OVERLAY {ov} holds no files')
+    files = sorted(chosen.values())
+    out = work / 'romfs_overlay' / 'RomFS.img'; kf = out.with_name('RomFS.img.key')
+    key = fingerprint(('files', files), sorted(chosen), img.stat().st_size, img.stat().st_mtime_ns)
+    if out.is_file() and reused(kf, key) is not None: say(f'RomFS overlay: {len(files)} files, reused'); return out
+    idx = romfs_image.read_index(str(img)); out.parent.mkdir(parents=True, exist_ok=True); tmp = out.with_name('RomFS.img.part'); tmp.unlink(missing_ok=True)
+    for rel in chosen:
+        e = idx.get(rel)
+        if not e or e[0]: raise BuildError(f'DM_ROMFS_OVERLAY: {rel} is not a file of the game\'s RomFS (the image cannot take new files)')
+    subprocess.run(['cp', '-c', str(img), str(tmp)], check=True)   # APFS clone
+    romfs_image.overlay(str(tmp), {rel: str(p) for rel, p in chosen.items()})
+    os.replace(tmp, out); kf.write_text(key)
+    resized = sum(1 for rel, p in chosen.items() if p.stat().st_size != idx[rel][2])
+    say(f'RomFS overlay: {len(chosen)} files written over the game\'s ({resized} resized) → {out}')
+    return out
+
 def ipa_name(name, app):   # "The Legend of Zelda: Link's Awakening" → TheLegendOfZeldaLinksAwakening.ipa: ASCII words joined, apostrophes dropped; the title ID when nothing ASCII is left
     words = re.findall(r'[A-Za-z0-9]+', name.replace("'", '').replace('’', ''))
     words = [w.capitalize() if w.isupper() and len(w) > 1 else w[:1].upper() + w[1:] for w in words]
@@ -1112,7 +1142,8 @@ def rewrite(py, repo, exe_dir, out, env, logs, g, provisional=False):
     try: own = [l for l in (repo / 'dm/games' / Path(env.get('DM_GAME') or '-').name / 'game.tsv').read_text(encoding='utf-8').splitlines() if l.startswith('build\t')]
     except OSError: own = []
     key = fingerprint(('files', [repo / 'dm/tools' / f for f in ('patch_nso.py', 'nso.py', 'nso_code.py', 'nso_asm.py', 'nso_match.py', 'ue_cvar.py', 'ue_malloc.py', 'loader_census.py')] + patch_files(repo, exe_dir, mods, env.get('DM_GAME')) + list(src.values()) + ([manifest] if manifest.is_file() else [])), names, capstone.__version__,
-                      {k: env.get(k) for k in ('DM_PATCH_FRONT', 'DM_GAME')}, own)
+                      {k: env.get(k) for k in ('DM_PATCH_FRONT', 'DM_GAME', 'DM_EXEFS_PCHTXT')}, own,
+                      ('files', [Path(p) for p in (env.get('DM_EXEFS_PCHTXT') or '').split(':') if p]))   # ExeFS mods the rewriter applies (patch_nso.py, DM_EXEFS_PCHTXT): their content too
     if all((out / f'{m}.patched.bin').is_file() for m in names) and reused(kf, key) is not None:
         PROG.end(f'{", ".join(mods)}{f" and {len(nros)} NROs" if nros else ""}, reused (inputs unchanged)'); return g
     tmp = out.with_name(out.name + '.partial'); rmtree(tmp); tmp.mkdir(parents=True); logs.mkdir(parents=True, exist_ok=True)
@@ -2470,7 +2501,7 @@ def main(args=None):
 
     if not prepare_xcode and free_gb(out_ipa.parent) < 5: raise BuildError(f'less than 5 GB free on the volume of {out_ipa.parent}')
     say('preparing the Xcode project' if prepare_xcode else f'building the IPA → {out_ipa}')
-    ipa_env = dict(env, GAME=g.id, W=str(work / 'ipa'), PATCHED=str(patched), ROMFS=str(rfs.source(game)), MSL_IOS=str(ios), GFXAPI=gfx, FONT_PY=py, DM_DISPLAY_NAME=app_name, DM_BUNDLE_ID=bundle_id, AOC=str(aoc or ''), DM_XCODE_DERIVED_DATA=str(work / 'xcode-derived-data'), DM_TEAM_ID=team_id, DM_LANG=lang)
+    ipa_env = dict(env, GAME=g.id, W=str(work / 'ipa'), PATCHED=str(patched), ROMFS=str(romfs_for_ipa(game, work, env)), MSL_IOS=str(ios), GFXAPI=gfx, FONT_PY=py, DM_DISPLAY_NAME=app_name, DM_BUNDLE_ID=bundle_id, AOC=str(aoc or ''), DM_XCODE_DERIVED_DATA=str(work / 'xcode-derived-data'), DM_TEAM_ID=team_id, DM_LANG=lang)
     if prepare_xcode: ipa_env['DM_XCODE_PROJECT_DIR'] = str(project.parent)
     separate = romfs_mode == 'separate'
     if separate: ipa_env['DM_COPY_ROMFS'] = 'NO'; say('game files: separate (DM_COPY_ROMFS=NO), left out of the app; the image stays at ' + str(rfs.source(game)))

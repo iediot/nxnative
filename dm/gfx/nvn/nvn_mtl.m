@@ -601,6 +601,60 @@ int mtl_gpu_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off, uint64_
     pthread_mutex_unlock(&g_mu);
     return ok;
 }
+// Uniform buffer scan (diagnostic, DM_UBO_SCAN=<present number>): in that frame's replay every bound uniform buffer is read and searched for a 4x4 float matrix shaped like a
+// perspective projection at any width / height ratio (no x / y shear, a z row with depth terms, a last row or column of (0, 0, ±1, 0)), each logged once per buffer address
+// with its stage, slot and the CPU address of the matrix (the game's own memory: DM_PROBE_WATCH on it reports the code that writes it). For finding the projection a screen-fill
+// gate has to reach when the game keeps it nowhere else (Super Mario Bros. Wonder's courses)
+static uint64_t g_present_n;
+static void fill_uv(const char *key, int stage, int reg, uint64_t addr, uint64_t size);   // screen fill: a pane's texture x scale onto the wider frame (below, with front_screen_aspect)
+static void ubo_scan(const p_bind_buf *b) {
+    static float hack = -1; if (hack < 0) { const char *e = getenv("DM_UBO_HACK"); hack = e ? (float)atof(e) : 0; }
+    if (hack > 0 && b->addr && b->size >= 64) {   // experiment (DM_UBO_HACK=<factor>): every frame, row 0 of a side-on camera view-projection at a bound buffer's start scaled once per value
+        void *hb; uint64_t ho;
+        uint64_t span = b->size < 0x400 ? b->size : 0x400;
+        static int at0 = -1; if (at0 < 0) at0 = getenv("DM_UBO_HACK_AT0") != NULL;   // =1: only at the buffer's start (the layouts' matrix)
+        if (mtl_addr(b->addr, span, &hb, &ho)) for (uint64_t o = 0; o + 64 <= span; o += 16) {
+            if (at0 && o) break;
+            float *f = (float *)((uint8_t *)[(__bridge id<MTLBuffer>)hb contents] + ho + o);
+            static float last[1024]; static uint64_t laddr[1024]; unsigned h = (unsigned)((b->addr + o) >> 4) & 1023;
+            static int tilt = -1; if (tilt < 0) tilt = getenv("DM_UBO_HACK_TILT") != NULL;   // =1: a camera tilted in y / z (w row (0, a, b, t), a² + b² = 1), not the layouts' straight one
+            int straight = f[12] == 0 && f[13] == 0 && f[14] == -1 && f[0] > 0 && f[1] == 0 && f[2] == 0 && f[4] == 0 && f[5] != 0 && f[6] == 0 && f[8] == 0 && f[9] == 0;
+            int tilted = f[12] == 0 && f[13] != 0 && fabsf(f[13] * f[13] + f[14] * f[14] - 1) < 1e-3f && f[0] != 0 && f[1] == 0 && f[2] == 0 && f[4] == 0 && f[8] == 0;
+            if ((tilt ? tilted : straight) && isfinite(f[0]) && !(laddr[h] == b->addr + o && last[h] == f[0])) {
+                for (int c = 0; c < 4; c++) f[c] *= hack;
+                laddr[h] = b->addr + o; last[h] = f[0];
+                static int said; if (said < 12) { said++; MLOG("[ubohack] stage %d slot %d buffer %#llx +%#llx: m00 now %.4f (m11 %.4f, w row %.1f)", b->stage, b->index, (unsigned long long)b->addr, (unsigned long long)o, f[0], f[5], f[15]); }
+            }
+        }
+    }
+    static long target = -2; if (target == -2) { const char *e = getenv("DM_UBO_SCAN"); target = e ? atol(e) : -1; }
+    if (target < 0 || (long)g_present_n != target || !b->addr || !b->size) return;
+    static uint64_t seen[256]; static int nseen; for (int k = 0; k < nseen; k++) if (seen[k] == b->addr) return;
+    if (nseen < 256) seen[nseen++] = b->addr;
+    void *buf; uint64_t off; uint64_t len = b->size > 0x10000 ? 0x10000 : b->size;
+    if (!mtl_addr(b->addr, len, &buf, &off)) { MLOG("[uboscan] stage %d slot %d %#llx: not in a pool (inline update)", b->stage, b->index, (unsigned long long)b->addr); return; }
+    const float *f0 = (const float *)((const uint8_t *)[(__bridge id<MTLBuffer>)buf contents] + off);
+    static int vset = -1; static uint32_t vbits; if (vset < 0) { const char *e = getenv("DM_UBO_FIND"); vset = e != NULL; if (e) vbits = (uint32_t)strtoul(e, NULL, 16); }
+    if (vset) {   // DM_UBO_FIND=<float bits hex>: every place that value sits in the bound buffers, with the 4 floats before and the 7 after it
+        const uint32_t *u = (const uint32_t *)f0;
+        for (uint64_t k = 4; k + 8 <= len / 4; k++) if (u[k] == vbits)
+            MLOG("[ubofind] stage %d slot %d buffer %#llx +%#llx: %.4f %.4f %.4f %.4f [%.4f] %.4f %.4f %.4f %.4f %.4f %.4f %.4f", b->stage, b->index, (unsigned long long)b->addr,
+                 (unsigned long long)(k * 4), f0[k - 4], f0[k - 3], f0[k - 2], f0[k - 1], f0[k], f0[k + 1], f0[k + 2], f0[k + 3], f0[k + 4], f0[k + 5], f0[k + 6], f0[k + 7]);
+    }
+    for (uint64_t k = 0; k + 16 <= len / 4; k++) {
+        const float *f = f0 + k;
+        int rowm = f[12] == 0 && f[13] == 0 && fabsf(f[14]) == 1 && f[15] == 0, colm = f[3] == 0 && f[7] == 0 && fabsf(f[11]) == 1 && f[15] == 0;
+        if (!rowm && !colm) continue;
+        int fin = 1; for (int q = 0; q < 16 && fin; q++) fin = isfinite(f[q]);
+        if (!fin || fabsf(f[0]) < 0.05f || fabsf(f[5]) < 0.05f || fabsf(f[1]) > 1e-3f || fabsf(f[4]) > 1e-3f || f[10] == 0 || (rowm ? f[11] : f[14]) == 0) continue;
+        MLOG("[uboscan] stage %d slot %d buffer %#llx +%#llx (cpu %p): %s m00 %.4f m11 %.4f ratio %.4f z %.4f %.4f", b->stage, b->index, (unsigned long long)b->addr,
+             (unsigned long long)(k * 4), (const void *)f, rowm ? "row-major" : "column-major", f[0], f[5], fabsf(f[5] / f[0]), f[10], rowm ? f[11] : f[14]);
+        if (k) {   // matched past the start: the buffer's first 32 floats, for its layout
+            for (int r = 0; r < 8; r++) MLOG("[uboscan]   +%#04x %10.4f %10.4f %10.4f %10.4f", r * 16, f0[r * 4], f0[r * 4 + 1], f0[r * 4 + 2], f0[r * 4 + 3]);
+        }
+        k += 15;
+    }
+}
 
 // ---------- Submission ----------
 static void defer_reset(void); static void defer_fallback(void);
@@ -817,6 +871,7 @@ void mtl_sub_begin(void) {
     g_vis_ring_i = pick; g_vis_ring[pick].fence = UINT64_MAX;
     if (!g_vis_ring[pick].buf) { g_vis_ring[pick].buf = [g_dev newBufferWithLength:VIS_SLOTS * 8 options:MTLResourceStorageModeShared]; res_add(g_vis_ring[pick].buf); }
     g_vis = g_vis_ring[pick].buf;
+    memset(g_vis.contents, 0, VIS_SLOTS * 8);   // the passes accumulate into it (rp_begin): every slot starts at 0; its last submission has landed (fence <= g_done)
     void pg_sub_begin_ext(uint64_t fence); pg_sub_begin_ext(g_fence + 1);
     void arena_begin(void); arena_begin();
 }
@@ -1107,11 +1162,12 @@ static int ubd_covers(uint64_t lo, uint64_t hi) {
     return 1;
 }
 // GPU address of the shadow of uniform range [lo, hi) (ubd_covers holds): one deferred update holding all of it and suitably aligned is used in place; otherwise the updates are laid into the arena in order
+static uint8_t *g_ubd_cpu;   // the CPU address of what ubd_shadow returned last (fill_uv corrects a value there)
 static uint64_t ubd_shadow(uint64_t lo, uint64_t hi) {
     for (int i = g_nubd - 1; i >= 0; i--) { const ubd_ent *e = &g_ubd[i];
         if (e->lo <= lo && hi <= e->hi) { int later = 0; for (int j = i + 1; j < g_nubd; j++) later |= lo < g_ubd[j].hi && g_ubd[j].lo < hi;
-            uint64_t g = e->gpu + (lo - e->lo); if (!later && !(g & 15)) return g; break; } }
-    id<MTLBuffer> ab; size_t o = arena_alloc((size_t)(hi - lo), &ab); uint8_t *d = (uint8_t *)ab.contents + o;
+            uint64_t g = e->gpu + (lo - e->lo); if (!later && !(g & 15)) { g_ubd_cpu = (uint8_t *)e->buf.contents + e->off + (lo - e->lo); return g; } break; } }
+    id<MTLBuffer> ab; size_t o = arena_alloc((size_t)(hi - lo), &ab); uint8_t *d = (uint8_t *)ab.contents + o; g_ubd_cpu = d;
     for (int i = 0; i < g_nubd; i++) { const ubd_ent *e = &g_ubd[i]; uint64_t a = e->lo > lo ? e->lo : lo, b = e->hi < hi ? e->hi : hi;
         if (a < b) memcpy(d + (a - lo), (const uint8_t *)e->buf.contents + e->off + (a - e->lo), (size_t)(b - a)); }
     return ab.gpuAddress + o;
@@ -1467,6 +1523,8 @@ static void post_run(post_rec *r, uint64_t c0, uint64_t c1) {
             vis_list *l = ops[i].vis; uint64_t sum = 0;
             for (int k = 0; k < l->n; k++) { sum += ((const uint64_t *)((__bridge id<MTLBuffer>)l->s[k].buf).contents)[l->s[k].slot]; CFRelease(l->s[k].buf); }
             free(l); uint64_t rec[2] = {sum, gpu_ticks()}; memcpy((void *)ops[i].addr, rec, sizeof rec);
+            static int vlog = -1; if (vlog < 0) vlog = getenv("DM_VIS_LOG") != NULL;   // diagnostic: every samples-passed result written, with the frame being presented
+            if (vlog) LOG("[vis] frame %llu result %#llx samples %llu", (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)ops[i].addr, (unsigned long long)sum);
         }
         else if (ops[i].kind == 4) mirror_rb_land(ops[i].vis);
         else { uint64_t t = rep_ticks(&ops[i], sc, seg_last, c0, c1), rec[2] = {(ops[i].type == 0 || ops[i].type == 0x10) && !DM_GAME_RENDER_COND ? t : 0, t}; memcpy((void *)ops[i].addr, rec, sizeof rec); }   // render_cond: a timestamp report's counter field is 0, as on the GPU (see rc_value)
@@ -3534,6 +3592,10 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
         // Slots used up (one submission exceeds VIS_SLOTS counting passes): continue in a new overflow buffer. A ring buffer must not be retired (it is still used in rotation, and retiring removes it from the residency set); only a previous overflow buffer is
         if (!g_vis || g_vis_n >= VIS_SLOTS) { if (g_vis && !vis_in_ring(g_vis)) defer_obj_release(g_vis); g_vis = [g_dev newBufferWithLength:VIS_SLOTS * 8 options:MTLResourceStorageModeShared]; res_add(g_vis); g_vis_n = 0; }
         pd.visibilityResultBuffer = g_vis;
+        // Accumulate, not Metal 4's default Reset: Reset clears the visibility results each time a render encoder is made, and every pass of a submission shares this buffer
+        // (one slot per counting pass), so a later pass wiped the counts of earlier ones before the submission landed: occlusion queries read 0 or their count from frame to
+        // frame (Super Mario Odyssey's Cap Kingdom: the queries that scale its glare, a one-frame flash every few seconds). The buffer is zeroed when a submission takes it
+        pd.visibilityResultType = MTLVisibilityResultTypeAccumulate;
     }
     g_enc_vis = 0; g_enc_has_vis = g_vis_on;
     // Layered rendering: a vertex shader that writes the layer selects the attachment layer per primitive only when the pass has renderTargetArrayLength; without it every layer went to the
@@ -6991,10 +7053,12 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (!u || !u->addr || !mtl_gpu_addr(u->addr, 1, &mb, &mo, &gpu)) {   // reads 0 (the all-zero bank), as an unbound texture slot does, instead of through a null pointer
                 RED_ONCE(16, "stage %d cb%d has no uniform buffer bound", nvn_stage, reg); slots[aid] = zero_bank_gpu(); USE(zero_bank(), MTLResourceUsageRead); continue; }
             uint64_t ul = cb_len(sh, reg, u->size);   // what the shader can read of it
+            uint8_t *fcpu = (uint8_t *)(uintptr_t)u->addr;   // where the GPU reads the block from (fill_uv corrects it there)
             if (g_nubd && ubd_hits(u->addr, u->addr + ul)) {   // inline updates deferred in this pass (see mtl_sub_update); ubd_conflict made sure they cover the binding or the rest can be read from memory
-                uint64_t g; const uint8_t *c; if (ubd_covers(u->addr, u->addr + ul)) gpu = ubd_shadow(u->addr, u->addr + ul);
-                else if (ubp_get(u->addr, u->addr + ul, &g, &c)) gpu = g;
+                uint64_t g; const uint8_t *c; if (ubd_covers(u->addr, u->addr + ul)) { gpu = ubd_shadow(u->addr, u->addr + ul); fcpu = g_ubd_cpu; }
+                else if (ubp_get(u->addr, u->addr + ul, &g, &c)) { gpu = g; fcpu = (uint8_t *)c; }
                 else RED_ONCE(92, "a uniform update deferred inside the pass covers only part of the binding (stage %d cb%d): the content before the update is read", nvn_stage, reg); }
+            fill_uv(sh->key, nvn_stage, reg, (uint64_t)(uintptr_t)fcpu, ul);
             if (bl) {
                 PD("B %llu st%d cb reg%d addr=%#llx size=%llu pool=%#llx+%#llx f=%g,%g,%g,%g", g_stat_pass, nvn_stage, reg, (unsigned long long)u->addr, (unsigned long long)u->size,
                    (unsigned long long)(u->addr - mo), (unsigned long long)mo, ((float *)u->addr)[0], ((float *)u->addr)[1], ((float *)u->addr)[2], ((float *)u->addr)[3]);
@@ -7469,8 +7533,8 @@ static int state_op(uint32_t op, const void *a) {
         case OP_BIND_VATTR: { const p_bind_vattr *b = a; if (S.nattr != b->n || memcmp(S.attr, b->st, 4 * b->n)) { memcpy(S.attr, b->st, 4 * b->n); S.nattr = b->n; g_pso_dirty = 1; } break; }
         case OP_BIND_VSTREAM: { const p_bind_vstream *b = a; if (S.nstream != b->n || memcmp(S.stream, b->st, 8 * b->n)) { memcpy(S.stream, b->st, 8 * b->n); S.nstream = b->n; g_pso_dirty = 1; } break; }
         case OP_BIND_VBUF: case OP_BIND_VBUF1: { p_bind_vbuf tmp; const p_bind_vbuf *b = vbuf_rec(op, a, &tmp); memcpy(&S.vbuf[b->first], b->r, sizeof *b->r * b->n); break; }
-        case OP_BIND_UBO: case OP_BIND_UBO_SMALL: { p_bind_buf tmp; const p_bind_buf *b = bind_buf_rec(op, a, &tmp); if (b->stage < 6 && b->index < 16 && memcmp(&S.ubo[b->stage][b->index], b, sizeof *b)) { S.ubo[b->stage][b->index] = *b; g_args_dirty[b->stage] = 1; } break; }
-        case OP_BIND_SSBO: { const p_bind_buf *b = a; if (b->stage < 6 && b->index < 16 && memcmp(&S.ssbo[b->stage][b->index], b, sizeof *b)) { S.ssbo[b->stage][b->index] = *b; g_args_dirty[b->stage] = 1; } break; }
+        case OP_BIND_UBO: case OP_BIND_UBO_SMALL: { p_bind_buf tmp; const p_bind_buf *b = bind_buf_rec(op, a, &tmp); ubo_scan(b); if (b->stage < 6 && b->index < 16 && memcmp(&S.ubo[b->stage][b->index], b, sizeof *b)) { S.ubo[b->stage][b->index] = *b; g_args_dirty[b->stage] = 1; } break; }
+        case OP_BIND_SSBO: { const p_bind_buf *b = a; ubo_scan(b); if (b->stage < 6 && b->index < 16 && memcmp(&S.ssbo[b->stage][b->index], b, sizeof *b)) { S.ssbo[b->stage][b->index] = *b; g_args_dirty[b->stage] = 1; } break; }
         case OP_BIND_TEX: case OP_BIND_TEX1: { p_bind_handles t1; const p_bind_handles *b = bind_rec(op, a, &t1);
             if (b->n < 0 || b->n > 32) {   // the recorder never writes more than 32 (bind_handles): the record was overwritten after it was recorded
                 static int once; if (!once++) { const uint8_t *q = (const uint8_t *)a; char hx[3 * 96 + 1]; for (int k = 0; k < 96; k++) snprintf(hx + 3 * k, 4, "%02x ", q[k - 32]);
@@ -11131,10 +11195,51 @@ static id<MTLTexture> present_raw_src(id<MTLTexture> src) {
 // The rectangle of the canvas (dw x dh) the picture (cw x ch) is drawn into: the picture's aspect ratio kept and centred, black bars in the rest (no stretching when the screen's ratio
 // differs from the game's, e.g. iPhone about 19.5:9 against the game's 16:9); when the ratios differ by under 1 % (the remainder from a game width that is a multiple of 8 in the
 // full-screen setup, e.g. 1952x900 against 2868x1320 differs by 0.17 %) the whole canvas, leaving no border of a few pixels
+// With screen fill (front_screen_aspect() > 0: the front end gave the game's projection the screen's aspect, hle_oe.c) the picture is drawn wider than it is and is stretched over
+// the whole canvas, which brings it back to its proportions
+__attribute__((weak)) double front_screen_aspect(void) { return 0; }
+// Screen fill (profile fill_uv_scale, Animal Crossing: New Horizons' menu panels): a UI pane that shows the frame behind it samples the scene's 16:9 target at a texture
+// scale the game computes for a 1920-wide screen (pane width / 1920). With the wider picture that scale picks a slice too wide and off centre, so a panel's backdrop did not
+// line up with the scene around it. For each listed vertex shader the float at <offset> in the stage's uniform slot is divided by k = screen aspect / (16 / 9) as the draw
+// binds it (u - 0.5 over k: the same layout position in the wider picture); the value written is remembered per address, so a block the game did not write again is not
+// divided twice
+static double fill_k(void) {
+    static double k = -1;
+    if (k < 0) { const char *e = getenv("DM_SCREEN_ASPECT"); double a = e && atof(e) > 0 ? atof(e) : front_screen_aspect(); k = a > 16.0 / 9 + 1e-3 ? a / (16.0 / 9) : 0; }
+    return k;
+}
+static void fill_uv(const char *key, int stage, int reg, uint64_t addr, uint64_t size) {
+    // entries <key>:<slot>:<offset>[:m]: divided by k, or with :m multiplied by k (an offset in units of the scaled width, so the slice keeps its centre);
+    // DM_FILL_UV (a test, which DM_CTL's env can change while the game runs) replaces the profile's list
+    static int n = -1; static char src[256]; static struct { char key[24]; int slot; unsigned off; int mul; } e[8];
+    const char *cur = getenv("DM_FILL_UV"); if (!cur) cur = DM_GAME_FILL_UV_SCALE;
+    if (n < 0 || strcmp(cur, src)) {
+        n = 0; snprintf(src, sizeof src, "%s", cur); const char *p = src;
+        while (*p && n < 8) { char k[24] = {0}, m = 0; int sl; unsigned of; int got = sscanf(p, "%23[^:]:%d:%i:%c", k, &sl, &of, &m);
+            if (got >= 3) { strcpy(e[n].key, k); e[n].slot = sl; e[n].off = of; e[n].mul = got == 4 && m == 'm'; n++; }
+            p = strchr(p, ','); if (!p) break; p++; }
+    }
+    if (!n || stage != 0 || !addr || !fill_k()) return;
+    for (int i = 0; i < n; i++) {
+        if (e[i].slot != reg || e[i].off + 4 > size || strcmp(e[i].key, key)) continue;
+        static uint64_t wa[64]; static float wv[64]; static int wn;
+        float *f = (float *)(uintptr_t)(addr + e[i].off); int j = 0;
+        while (j < wn && wa[j] != addr + e[i].off) j++;
+        if (j < wn && wv[j] == *f) continue;   // ours, not written again
+        *f = (float)(e[i].mul ? *f * fill_k() : *f / fill_k());
+        if (j == wn) { if (wn < 64) wn++; else j = (int)(addr >> 4) & 63; }
+        wa[j] = addr + e[i].off; wv[j] = *f;
+    }
+}
+// The rectangle of the canvas (dw x dh) the picture (cw x ch) is drawn into: the picture's aspect ratio kept and centred, black bars in the rest (no stretching when the screen's ratio
+// differs from the game's, e.g. iPhone about 19.5:9 against the game's 16:9); when the ratios differ by under 1 % (the remainder from a game width that is a multiple of 8 in the
+// full-screen setup, e.g. 1952x900 against 2868x1320 differs by 0.17 %) the whole canvas, leaving no border of a few pixels.
+// With screen fill (front_screen_aspect() > 0: the front end gave the game's projections the screen's aspect, hle_oe.c) the picture is drawn wider than it is and is stretched over
+// the whole canvas
 static MTLViewport present_viewport(double cw, double ch, double dw, double dh) {
     double s = fmin(dw / cw, dh / ch);
     MTLViewport vp = {floor((dw - cw * s) / 2), floor((dh - ch * s) / 2), round(cw * s), round(ch * s), 0, 1};
-    if (fabs((dw / dh) / (cw / ch) - 1) < 0.01) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
+    if (fabs((dw / dh) / (cw / ch) - 1) < 0.01 || front_screen_aspect() > 0) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
     return vp;
 }
 // The valid source rectangle of a present (x, y, width, height; the crop of nvnWindowSetCrop, zero = the whole texture); 0 when it lies outside the texture

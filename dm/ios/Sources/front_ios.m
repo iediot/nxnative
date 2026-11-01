@@ -2,6 +2,7 @@
 // with a TV connected the Metal view is on the TV and the phone shows the pad (DmTVSceneDelegate).
 // The host runs on the big-stack thread started by main.m; front_run runs the guest directly on the calling thread.
 #import <UIKit/UIKit.h>
+#include <stdatomic.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
 #import <AVFAudio/AVFAudio.h>
@@ -56,6 +57,19 @@ static CGRect fit_16_9(CGRect b) {   // the largest centered 16:9 rectangle in b
     if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
     return CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h);
 }
+// Screen fill (profile screen_fill; DM_SCREEN_FILL=0 / 1 in Documents/env.txt overrides): on a screen wider than 16:9 the game's picture covers the whole screen, stretched, and the
+// screen's width / height goes to the projection aspect gate (hle_oe.c), which gives the game's 16:9 perspective projections that aspect, so the stretch brings the picture back to its proportions (a wider
+// view, the layouts centred). Set once on the main thread when the game view is made; 0 = the game's 16:9 in the largest centred rectangle, as before (an iPad, narrower than 16:9).
+// A TV keeps 16:9 (DmTVVC): the game's view there is the squeezed wider picture, unstretched
+static _Atomic double g_fill_aspect;
+double front_screen_aspect(void) { return atomic_load(&g_fill_aspect); }
+CGRect dm_game_rect(CGRect b) { return atomic_load(&g_fill_aspect) > 0 ? b : fit_16_9(b); }   // where the picture is in the phone's view; DmGamepad.m maps touches by it
+static void fill_choose(CGRect b) {
+    const char *e = getenv("DM_SCREEN_FILL"); int on = e ? atoi(e) != 0 : DM_GAME_SCREEN_FILL;
+    double a = MAX(b.size.width, b.size.height) / MAX(MIN(b.size.width, b.size.height), 1);
+    if (on && a > 16.0 / 9 + 1e-3) { atomic_store(&g_fill_aspect, a); LOG("front end: screen fill, the picture covers the %.0fx%.0f screen (aspect %.4f)", b.size.width, b.size.height, a); }
+    else if (on) LOG("front end: screen fill: the screen (aspect %.4f) is not wider than 16:9, the picture stays 16:9", a);
+}
 static void tv_attach(void);
 
 @interface DmRootVC : UIViewController
@@ -95,6 +109,7 @@ static void launcher_done(void) { [g_root startGame]; }
     if (self.game) return;
     dm_cloud_saves_env();   // DM_SAVE_SYNC from the launcher's Cloud saves pick, before the game's first save mount reads it (CloudSaves.m, save_sync.h)
     front_hud_env();   // before the game view makes its device (an env file's DM_METAL_HUD sets it in main.m already)
+    fill_choose(self.view.window ? self.view.window.bounds : UIScreen.mainScreen.bounds);   // before the game's first frames build its camera
     self.game = [[DmGameView alloc] initWithFrame:self.view.bounds];
     [self.view addSubview:self.game];
     g_layer = (CAMetalLayer *)self.game.layer;
@@ -113,7 +128,7 @@ static void launcher_done(void) { [g_root startGame]; }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGRect b = self.view.bounds; if (!self.game) return;
-    if (self.game.superview == self.view) self.game.frame = fit_16_9(b);   // on a TV the TV's view lays it out
+    if (self.game.superview == self.view) self.game.frame = dm_game_rect(b);   // on a TV the TV's view lays it out
     if (self.fps) {   // the top row's free stretch: right of DmGamepad.m's L3 key (102 + 17 of its units from the safe edge), level with − / + (22 units down); u is its unit
         CGRect s = UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets); CGFloat u = MIN(b.size.height / 430.0, 1.3);
         self.fps.frame = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), 64, 22);

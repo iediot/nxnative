@@ -52,11 +52,26 @@ HLE_FORCE("_ZN2nn2vi19SetLayerScalingModeEPNS0_5LayerENS0_11ScalingModeE", "laye
 // (SIGSEGV in android::Surface::getQueuedFrameNumber). The host's frame number is the count of frames the game has presented
 uint64_t dm_nvn_frame_count(void);
 HLE_FORCE("_ZN2nn2vi20GetLatestFrameNumberEPmPKNS0_5LayerE", "the layer's latest frame number: the frames presented so far", Result, h_vi_FrameNo, uint64_t *out, const void *layer) {
-    (void)layer; *out = dm_nvn_frame_count(); return RES_OK;
+    (void)layer; *out = dm_nvn_frame_count();
+    static int trace = -1; static uint64_t calls; if (trace < 0) trace = getenv("DM_VI_FRAMENO_LOG") != NULL;   // diagnostic: how often the game polls it, and what it sees
+    if (trace && (++calls & 1023) == 1) LOG("vi::GetLatestFrameNumber: call %llu → %llu", (unsigned long long)calls, (unsigned long long)*out);
+    return RES_OK;
 }
-HLE_FORCE("_ZN2nn2vi16ListFrameHistoryEPNS0_9FrameInfoEiPKNS0_5LayerE", "the layer's frame history: none kept, 0 entries", int, h_vi_FrameHist, void *out, int n, const void *layer) {
-    (void)out; (void)layer; static int once; if (!once++) LOG("vi::ListFrameHistory (%d entries asked): the host keeps no frame history, 0 returned", n);
-    return 0;
+// Unreal's Switch RHI learns which frames reached the screen from the layer's frame history (Minecraft Dungeons II: its "Viewport Thread", main+0x142afb0, asks after every vsync
+//   event, ListFrameHistory(NULL, 0) for the count, then the entries), and hands the newest one in state 2 with a frame number it has not seen to its flip tracking (the
+//   "RHIFrameFlipThread"), which completes the swap-chain fences (FRenderCommandFence with ESyncDepth::Swapchain). With no history no frame ever flipped, and the game thread
+//   waited on its first such fence until Unreal's 120 s timeout ("GameThread timed out waiting for RenderThread"). FrameInfo is 0x28 bytes, as that loop reads it: u64 state
+//   (2 = shown) at +0, u64 frame number at +8, then at +0x18 and +0x20 two system ticks it turns into seconds (flip time, vblank time). The host's history is one entry: the latest
+//   frame presented, the number GetLatestFrameNumber gives, shown at the time of its present (19.2 MHz ticks, as cntpct reads)
+uint64_t dm_nvn_frame_ns(void);
+HLE_FORCE("_ZN2nn2vi16ListFrameHistoryEPNS0_9FrameInfoEiPKNS0_5LayerE", "the layer's frame history: the latest frame presented, shown", int, h_vi_FrameHist, void *out, int n, const void *layer) {
+    (void)layer; uint64_t f = dm_nvn_frame_count();
+    static int once; if (!once++) LOG("vi::ListFrameHistory (%d entries asked): the host answers the latest frame presented (%llu so far)", n, (unsigned long long)f);
+    if (!f) return 0;
+    if (!out || n <= 0) return 1;
+    uint64_t t = dm_nvn_frame_ns() * 12 / 625, e[5] = {2, f, 0, t, t};
+    memcpy(out, e, sizeof e);
+    return 1;
 }
 // Rhythm Heaven Groove (SDK 21) asks for the built-in panel's identity at start (main+0xa9a4); the SDK's version calls through the vi service object the host never made (SIGSEGV at +0x20).
 //   The game reads a u32 kind and, when it is 2 or more, 0x14 more bytes that it hands on; any other answer makes it hand on zeros. The host has no panel: an all-zero identifier, kind 0

@@ -23,6 +23,9 @@ void front_screen_match(int fps);
 // thread and does not block. Nothing is shown without a window
 void front_progress(const char *title, long done, long total);
 #include <stdint.h>
+// Width / height of the screen the game fills (iOS front_ios.m with the profile's screen_fill on and a screen wider than 16:9); 0 = keep the game's 16:9 (the host's weak default, the Mac).
+// Read once, by the projection aspect gate (hle_oe.c), from the game thread
+double front_screen_aspect(void);
 // Text input box (for the software keyboard swkbd): the main thread shows a native input box and the calling thread blocks until the user confirms / cancels.
 // All text is UTF-8; max_chars is the maximum character count (0 = unlimited, only a hint for the front end; truncation is done uniformly by the caller hle_swkbd.c in UTF-16 units).
 // Confirm returns 1 and writes the result into out (including the terminating 0); cancel returns 0;

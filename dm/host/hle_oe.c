@@ -264,3 +264,187 @@ HLE_FORCE("_ZN2nn2oe17GetPseudoDeviceIdEPNS_4util4UuidE", "pseudo device ID; a f
     static const uint8_t k[16] = {0x78, 0x62, 0x6c, 0x00, 0x53, 0x57, 0x4e, 0x41, 0x54, 0x49, 0x56, 0x45, 0x31, 0x30, 0x30, 0x31};
     memcpy(uuid, k, 16);
 }
+
+// Projection aspect gate (OBS_PROJ_ASPECT, a profile's patches.py): at the entry of a perspective projection's matrix update (Animal Crossing: New Horizons 3.0.3, sead's
+// PerspectiveProjection at main+0x37e5968: x0 the projection, its aspect at +0xb0), an aspect of 16:9 becomes the screen's width / height. Every perspective projection goes through
+// it whoever set its aspect, the game's cameras and its layouts alike; one of another shape (a square icon render) keeps it, and a corrected one is no longer 16:9, so it is not
+// corrected twice. The field itself changes, so what else reads it (culling) sees the wider view too. The game then draws a wider view into the same 16:9 picture, squeezed by
+// 16:9 / aspect, and the front end stretches the picture over the whole screen (front_ios.m, nvn_mtl.m present_viewport; profile screen_fill): the 3D view comes out wider at its
+// own proportions and the layouts at theirs, centred. 0 from the front end (the Mac; a screen not wider than 16:9: an iPad) leaves every projection as it is
+#include "front.h"
+#include <string.h>
+#include <math.h>
+static void proj_aspect(uint64_t *r, int off) {
+    static double a = -1; static int fixed;
+    if (a < 0) {
+        const char *e = getenv("DM_SCREEN_ASPECT");   // a test value (the Mac, whose front end keeps 16:9): width / height, e.g. 2.1674
+        a = e && atof(e) > 0 ? atof(e) : front_screen_aspect();
+        if (a <= 16.0 / 9 + 1e-3) a = 0;
+        LOG("front end: projection aspect gate: %s", a ? "16:9 perspective projections take the screen's aspect" : "the game keeps its 16:9");
+        if (a) LOG("front end: projection aspect %.4f", a);
+    }
+    static int off_ = -1; if (off_ < 0) off_ = getenv("DM_PROJ_ASPECT_OFF") ? atoi(getenv("DM_PROJ_ASPECT_OFF")) : 0;   // diagnostic: =1 leaves perspective projections at 16:9
+    if (!a || !r[0] || off_) return;
+    float *f = (float *)(uintptr_t)(r[0] + (unsigned)off);
+    static int trace = -1, traced; if (trace < 0) trace = getenv("DM_PROJ_TRACE") && atoi(getenv("DM_PROJ_TRACE"));   // DM_PROJ_TRACE=1: the first hits, with the aspect found
+    if (trace && traced < 40) { LOG("[proj] aspect gate: %#llx aspect %.4f", (unsigned long long)r[0], *f); traced++; }
+    if (fabsf(*f / (16.0f / 9) - 1) > 0.01f) return;
+    *f = (float)a;
+    if (fixed < 8) { LOG("front end: projection %#llx: aspect 16:9 -> %.4f", (unsigned long long)r[0], a); fixed++; }
+}
+// A projection that holds a finished matrix (Super Mario Bros. Wonder's course camera: a class whose matrix getter copies a stored 4x4 out, main+0x165360, with near / far /
+// fovy / aspect kept beside it for the getters): the gate at that copy (OBS_PROJ_MATRIX; parameter: the aspect field's offset in its low 12 bits, the matrix's above them) scales
+// the matrix's x scale m[0][0] by 16:9 / the screen's aspect when the aspect field reads 16:9, and sets the field to the screen's: the same wider view as the aspect gate gives a
+// projection that builds its own matrix. A camera that writes its matrix again writes 16:9 again and is corrected again; one that does not is not corrected twice
+static void proj_matrix(uint64_t *r, int param) {
+    double a = front_screen_aspect();
+    const char *e = getenv("DM_SCREEN_ASPECT"); if (e && atof(e) > 0) a = atof(e);
+    if (a <= 16.0 / 9 + 1e-3 || !r[0]) return;
+    float *asp = (float *)(uintptr_t)(r[0] + (unsigned)(param & 0xfff)), *m = (float *)(uintptr_t)(r[0] + (unsigned)(param >> 12));
+    static int trace = -1, traced; if (trace < 0) trace = getenv("DM_PROJ_TRACE") && atoi(getenv("DM_PROJ_TRACE"));
+    if (trace && traced < 12) {   // each object once: the four fields after the matrix, then the matrix's 16 floats
+        static uint64_t seen[12]; int i = 0; while (i < traced && seen[i] != r[0]) i++;
+        if (i == traced) {
+            seen[traced++] = r[0]; const float *x = asp - 3;
+            LOG("[proj] matrix gate: %#llx fields %.4f %.4f %.4f %.4f", (unsigned long long)r[0], x[0], x[1], x[2], x[3]);
+            for (int k = 0; k < 4; k++) LOG("[proj]   %9.4f %9.4f %9.4f %9.4f", m[k * 4], m[k * 4 + 1], m[k * 4 + 2], m[k * 4 + 3]);
+        }
+    }
+    static int all = -1; if (all < 0) all = getenv("DM_PROJ_MATRIX_ALL") && atoi(getenv("DM_PROJ_MATRIX_ALL"));
+    if (all) {   // experiment (DM_PROJ_MATRIX_ALL=1): scale row 0 (clip x) of every stored matrix once per write, remembered per object by the m[0] it left
+        static uint64_t obj[64]; static float left[64]; int i = 0, freei = -1;
+        for (; i < 64 && obj[i] != r[0]; i++) if (!obj[i] && freei < 0) freei = i;
+        if (i < 64 && m[0] == left[i]) return;
+        if (i == 64) { if (freei < 0) return; i = freei; obj[i] = r[0]; }
+        float k = (float)(16.0 / 9 / a); for (int c = 0; c < 4; c++) m[c] *= k;
+        left[i] = m[0]; return;
+    }
+    if (fabsf(*asp / (16.0f / 9) - 1) > 0.01f) return;
+    m[0] *= (float)(16.0 / 9 / a); *asp = (float)a;
+    static int fixed;
+    if (fixed < 8) { LOG("front end: projection %#llx (stored matrix): x scale x%.4f for aspect %.4f", (unsigned long long)r[0], 16.0 / 9 / a, a); fixed++; }
+}
+// A function given a finished row-major projection matrix (Super Mario Bros. Wonder's courses: main+0x16baa0 builds their uniform block from the camera at [x2 + 0x18],
+// whose orthographic 4x4 projection is at +0x160): the gate at its entry (OBS_PROJ_ROW0; parameter: the register in bits 0-4, a pointer offset / 8 in bits 5-11 (0: the
+// register holds the base itself, otherwise the base is the pointer at register + that offset), the matrix's offset from the base / 16 in bits 12-23) scales row 0, the one
+// that makes clip x, by 16:9 / the screen's aspect when the matrix is 16:9 (|m11 / m00| within 1 % of 16:9) and a projection: last row (0, 0, ±1, 0) for a perspective,
+// (0, 0, 0, 1) for an orthographic one. The scaled matrix is no longer 16:9, so one kept from frame to frame is not scaled twice
+static void proj_row0(uint64_t *r, int param) {
+    int reg = param & 31; unsigned ptr = (unsigned)(param >> 5 & 0x7f) * 8, off = (unsigned)(param >> 12 & 0xfff) * 16;
+    double a = front_screen_aspect();
+    const char *e = getenv("DM_SCREEN_ASPECT"); if (e && atof(e) > 0) a = atof(e);
+    if (a <= 16.0 / 9 + 1e-3 || reg < 0 || reg > 29 || !r[reg]) return;
+    uint64_t base = r[reg]; if (ptr) { base = *(const uint64_t *)(uintptr_t)(base + ptr); if (!base) return; }
+    float *m = (float *)(uintptr_t)(base + off);
+    static int trace = -1, traced; if (trace < 0) trace = getenv("DM_PROJ_TRACE") ? atoi(getenv("DM_PROJ_TRACE")) : 0;   // 2: orthographic matrices only, with the object they sit in
+    if (trace && traced < 6 && (trace < 2 || m[15] == 1)) { traced++; for (int k = 0; k < 4; k++) LOG("[proj] row0 gate %p row %d: %9.4f %9.4f %9.4f %9.4f", (void *)m, k, m[k * 4], m[k * 4 + 1], m[k * 4 + 2], m[k * 4 + 3]);
+        if (trace > 1 && m[15] == 1) { const float *b = (const float *)(uintptr_t)base; for (int k = 0; k < 0x280 / 16; k++) LOG("[proj]   base +%#05x %10.4f %10.4f %10.4f %10.4f", k * 16, b[k * 4], b[k * 4 + 1], b[k * 4 + 2], b[k * 4 + 3]); } }
+    int persp = m[12] == 0 && m[13] == 0 && fabsf(m[14]) == 1 && m[15] == 0, ortho = m[12] == 0 && m[13] == 0 && m[14] == 0 && m[15] == 1;
+    if (!(persp || ortho) || m[0] == 0 || fabsf(fabsf(m[5] / m[0]) / (16.0f / 9) - 1) > 0.01f) return;
+    float k = (float)(16.0 / 9 / a); for (int c = 0; c < 4; c++) m[c] *= k;
+    static int fixed;
+    if (fixed < 8) { LOG("front end: projection matrix %p: row 0 x%.4f for aspect %.4f", (void *)m, (double)k, a); fixed++; }
+}
+// sead's OrthoProjection as a 3D camera takes it (Super Mario Bros. Wonder's courses: the camera update at main+0x119d80 is given the projection in x1, and takes its matrix,
+// its culling frustum and its aspect from it): the gate at that update's entry (OBS_PROJ_ORTHO; parameter: the box's offset in the object, top / bottom / left / right floats,
+// in bits 0-11, the register holding the object in bits 12-16, the offset of its matrix-dirty flag byte in bits 17-23) widens a 16:9 box about its centre to the screen's
+// aspect and marks the matrix dirty, so the update makes the matrix, its inverse, the frustum planes and the aspect from the wider view. Only there: the same class also
+// draws full-screen passes (a 1920 x 1080 box) and layouts, which must keep covering the 16:9 picture. A widened box is no longer 16:9: one kept from frame to frame is not
+// widened twice, one the game sets again is widened again
+static void proj_ortho(uint64_t *r, int param) {
+    double a = front_screen_aspect();
+    const char *e = getenv("DM_SCREEN_ASPECT"); if (e && atof(e) > 0) a = atof(e);
+    unsigned off = (unsigned)param & 0xfff, reg = (unsigned)param >> 12 & 31, dirty = (unsigned)param >> 17 & 0x7f;
+    if (a <= 16.0 / 9 + 1e-3 || reg > 29 || !r[reg]) return;
+    float *b = (float *)(uintptr_t)(r[reg] + off), t = b[0], bt = b[1], l = b[2], rt = b[3];
+    if (!(t > bt) || !(rt > l) || fabsf((rt - l) / (t - bt) / (16.0f / 9) - 1) > 0.01f) return;
+    float c = (l + rt) / 2, h = (rt - l) / 2 * (float)(a / (16.0 / 9));
+    b[2] = c - h; b[3] = c + h;
+    if (dirty) *(uint8_t *)(uintptr_t)(r[reg] + dirty) = 1;
+    static int fixed;
+    if (fixed < 8) { LOG("front end: orthographic projection %#llx: box %.4f..%.4f -> %.4f..%.4f for aspect %.4f", (unsigned long long)r[reg], l, rt, b[2], b[3], a); fixed++; }
+}
+__attribute__((constructor)) static void proj_aspect_attach(void) {
+    gate_obs_set(OBS_PROJ_ASPECT, proj_aspect); gate_obs_set(OBS_PROJ_MATRIX, proj_matrix); gate_obs_set(OBS_PROJ_ROW0, proj_row0); gate_obs_set(OBS_PROJ_ORTHO, proj_ortho);
+}
+
+// Projection matrix scan (diagnostic, DM_PROJ_SCAN=<seconds>[,<seconds>…]): at those times after start, the guest address space and the modules' images are searched for
+// 4x4 float matrices shaped like a 16:9 perspective projection (|m11 / m00| within 1.70–1.86, last row or column (0, 0, ±1, 0)), each logged with the nearest pointer before it
+// that names a module's read-only data (an object's vtable) within 0x400 bytes. For finding where a game keeps the projection of the view a screen-fill gate has to reach
+// (Super Mario Bros. Wonder's courses)
+#include <TargetConditionals.h>
+#if !TARGET_OS_IPHONE   // the Mac host only: iOS has no mach_vm.h
+#include <pthread.h>
+#include <unistd.h>
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+static int vt_of(const uint8_t *at, uint64_t lo, char *out, size_t cap) {   // the nearest vtable-like pointer at or below `at`, within 0x400 bytes
+    for (const uint8_t *p = (const uint8_t *)((uintptr_t)at & ~7ull); p + 0x400 > at && (uint64_t)(uintptr_t)p >= lo; p -= 8) {
+        uint64_t v; memcpy(&v, p, 8); module_t *m = module_of((void *)(uintptr_t)v);
+        if (m && v - (uint64_t)(uintptr_t)m->base >= m->ro_off && v - (uint64_t)(uintptr_t)m->base < m->size) {
+            snprintf(out, cap, "%s+%#llx at -%#lx", m->name, (unsigned long long)(v - (uint64_t)(uintptr_t)m->base), (long)(at - p)); return 1;
+        }
+    }
+    snprintf(out, cap, "no vtable within 0x400"); return 0;
+}
+static int scan_range(uint64_t lo, uint64_t hi, int hits) {
+    mach_vm_address_t a = lo;
+    while (a < hi && hits < 60) {
+        mach_vm_size_t sz = 0; vm_region_basic_info_data_64_t info; mach_msg_type_number_t n = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t obj;
+        if (mach_vm_region(mach_task_self(), &a, &sz, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &n, &obj) != KERN_SUCCESS || a >= hi) break;
+        if (info.protection & VM_PROT_READ) {
+            const float *f = (const float *)(uintptr_t)a, *end = (const float *)(uintptr_t)(a + sz) - 16;
+            for (; f < end && hits < 60; f++) {
+                static int pn = -1; static float pa, pb; static int pk;   // DM_PROJ_SCAN_PAIR=<a>,<b>,<k>: every place a float ≈ a has a float ≈ b k floats after it
+                if (pn < 0) { const char *e = getenv("DM_PROJ_SCAN_PAIR"); pn = e && sscanf(e, "%f,%f,%d", &pa, &pb, &pk) == 3; }
+                if (pn) {
+                    if (fabsf(f[0] - pa) <= fabsf(pa) * 1e-4f && fabsf(f[pk] - pb) <= fabsf(pb) * 1e-4f) {
+                        char vt[96]; vt_of((const uint8_t *)f, a, vt, sizeof vt);
+                        LOG("[projscan] pair at %#llx; %s", (unsigned long long)(uintptr_t)f, vt);
+                        for (int r = -4; r < 8; r++) LOG("[projscan]   %+4d  %10.5f %10.5f %10.5f %10.5f", r * 4, f[r * 4], f[r * 4 + 1], f[r * 4 + 2], f[r * 4 + 3]);
+                        hits++;
+                    }
+                    continue;
+                }
+                static int any = -1; if (any < 0) any = getenv("DM_PROJ_SCAN_ANY") && atoi(getenv("DM_PROJ_SCAN_ANY"));   // =1: every perspective / orthographic shape at any ratio
+                int rowm = f[12] == 0 && f[13] == 0 && fabsf(f[14]) == 1 && f[15] == 0, colm = f[3] == 0 && f[7] == 0 && fabsf(f[11]) == 1 && f[15] == 0;
+                int ortho = any && f[12] == 0 && f[13] == 0 && f[14] == 0 && f[15] == 1 && f[10] != 0 && f[0] != 0 && f[5] != 0 && f[1] == 0 && f[4] == 0;
+                if (ortho) rowm = 1;
+                if (!rowm && !colm) continue;
+                int fin = 1; for (int k = 0; k < 16 && fin; k++) fin = isfinite(f[k]);   // NaN passes every comparison below
+                float m00 = fabsf(f[0]), m11 = fabsf(f[5]);
+                if (!fin || !(any ? m00 > 0 && m11 > 0 && m11 / m00 > 0.2f && m11 / m00 < 5 : m00 >= 0.05f && m11 >= 0.05f && m11 / m00 >= 1.70f && m11 / m00 <= 1.86f)) continue;
+                // a projection's shape: no x / y shear terms, and depth terms in the z row (row-major: m22, m23; column-major: m22, m32)
+                if (!ortho && (fabsf(f[1]) > 1e-3f || fabsf(f[4]) > 1e-3f || f[10] == 0 || (rowm ? f[11] : f[14]) == 0 || fabsf(rowm ? f[2] : f[8]) > 1 || fabsf(rowm ? f[6] : f[9]) > 1)) continue;
+                static float seenv[64][3]; static int seenc[64], nseen;   // one line per distinct matrix, with how many copies were found
+                int j = 0; while (j < nseen && !(seenv[j][0] == f[0] && seenv[j][1] == f[5] && seenv[j][2] == f[10])) j++;
+                if (j < nseen) { seenc[j]++; continue; }
+                if (nseen < 64) { seenv[nseen][0] = f[0]; seenv[nseen][1] = f[5]; seenv[nseen][2] = f[10]; seenc[nseen++] = 1; }
+                char vt[96]; vt_of((const uint8_t *)f, a, vt, sizeof vt);
+                LOG("[projscan] %#llx %s m00 %.4f m11 %.4f ratio %.4f row2 %.4f %.4f %.4f %.4f; %s", (unsigned long long)(uintptr_t)f, ortho ? "orthographic" : rowm ? "row-major" : "column-major",
+                    f[0], f[5], m11 / m00, f[8], f[9], f[10], f[11], vt);
+                LOG("[projscan]   before %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f | after %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f", f[-8], f[-7], f[-6], f[-5], f[-4], f[-3], f[-2], f[-1],
+                    f[16], f[17], f[18], f[19], f[20], f[21], f[22], f[23]);
+                hits++; f += 15;
+            }
+        }
+        a += sz;
+    }
+    return hits;
+}
+static void *proj_scan(void *arg) {
+    const char *spec = arg; double prev = 0;
+    for (const char *p = spec; p && *p; p = strchr(p, ',') ? strchr(p, ',') + 1 : NULL) {
+        double t = atof(p); if (t > prev) usleep((useconds_t)((t - prev) * 1e6)); prev = t;
+        LOG("[projscan] scan at %.0f s", t);
+        int hits = scan_range(0x7000000000ull, 0x7100000000ull, 0);
+        for (int i = 0; i < g_nmod; i++) hits = scan_range((uint64_t)(uintptr_t)g_mod[i].base, (uint64_t)(uintptr_t)g_mod[i].base + g_mod[i].size, hits);
+        LOG("[projscan] %d distinct matrices", hits);
+    }
+    return NULL;
+}
+__attribute__((constructor)) static void proj_scan_start(void) {
+    const char *e = getenv("DM_PROJ_SCAN"); if (!e || !*e) return;
+    pthread_t t; pthread_create(&t, NULL, proj_scan, (void *)e); pthread_detach(t);
+}
+#endif

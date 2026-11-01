@@ -750,11 +750,18 @@ HLE_FORCE("_ZN2nn3hid28ShowControllerFirmwareUpdateERKNS0_27ControllerFirmwareUp
 
 // Touch screen: TouchScreenState<N> = { int64 sampling number; int32 count; int32 reserved; TouchState[N] }, filled from the front end's touch points (hle_touch.c touch_fill_n:
 // the Mac's mouse, the iPhone touches no gamepad control takes, DM_KEYS taps) in handheld mode, as on the Switch, whose screen is out of reach when docked: a game may read touches
-// without checking the mode, so in console mode the state stays empty (only the header is written). Super Mario Galaxy's pointer is the touch screen in handheld mode
+// without checking the mode, so in console mode the state stays empty (only the header is written). Super Mario Galaxy's pointer is the touch screen in handheld mode.
+// A profile with touch_docked on (DM_TOUCH_DOCKED=1 / 0 overrides) gets them in console mode too: the phone's screen is a touch screen whatever the game was told, so a game
+// that keeps its docked picture (Animal Crossing: New Horizons, 1080p docked against 720p handheld) still takes touches where it reads them (its software keyboard)
 int touch_fill_n(void *out, int max, uint64_t now_ns);
+static int touch_on(void) {
+    static int docked = -1;
+    if (docked < 0) { const char *e = getenv("DM_TOUCH_DOCKED"); docked = e ? atoi(e) != 0 : DM_GAME_TOUCH_DOCKED; }
+    return docked || dm_opmode() == 0;
+}
 static void touch_read(void *s, int n) {
     keys_sync();   // DM_KEYS frame steps due in this frame (their touches), before the read
-    if (dm_opmode() == 0) { touch_fill_n(s, n, now_ns()); return; }
+    if (touch_on()) { touch_fill_n(s, n, now_ns()); return; }
     int64_t *p = s; p[0] = atomic_fetch_add(&g_sampling, 1) + 1; ((int32_t *)s)[2] = 0; ((int32_t *)s)[3] = 0;
 }
 HLE_FORCE("_ZN2nn3hid21InitializeTouchScreenEv", "connect to the hid touch screen; the host takes touch points from the front end", void, h_hid_InitTouch, void) {}
@@ -764,12 +771,12 @@ HLE_FORCE("_ZN2nn3hid21InitializeTouchScreenEii", "connect to the hid touch scre
     HLE_FORCE("_ZN2nn3hid19GetTouchScreenStateILm" #N "EEEvPNS0_16TouchScreenStateIXT_EEE", "touch screen current state (touch points only in handheld mode)", void, h_hid_Touch1_##N, void *s) { touch_read(s, N); } \
     HLE_FORCE("_ZN2nn3hid20GetTouchScreenStatesILm" #N "EEEiPNS0_16TouchScreenStateIXT_EEEi", "touch screen states: 1 entry (touch points only in handheld mode)", int, h_hid_TouchN_##N, void *s, int n) { if (n <= 0) return 0; touch_read(s, N); return 1; }
 TOUCH(1) TOUCH(2) TOUCH(3) TOUCH(4) TOUCH(5) TOUCH(6) TOUCH(7) TOUCH(8) TOUCH(9) TOUCH(10) TOUCH(11) TOUCH(12) TOUCH(13) TOUCH(14) TOUCH(15) TOUCH(16)
-// Gestures: recognized from the same touch points (hle_touch.c gesture_fill), so only in handheld mode too
+// Gestures: recognized from the same touch points (hle_touch.c gesture_fill), so only where those reach the game (touch_on)
 int gesture_fill(void *out, int n, uint64_t now_ns);
 HLE_FORCE("_ZN2nn3hid17InitializeGestureEv", "connect to the hid gesture recognizer; the host recognizes gestures from the touch points", void, h_hid_InitGesture, void) {}
 HLE_FORCE("_ZN2nn3hid16GetGestureStatesEPNS0_12GestureStateEi", "gesture states, newest first (handheld mode: recognized from the touch points; console mode: none)", int, h_hid_Gestures, void *out, int n) {
     keys_sync();
-    return dm_opmode() == 0 ? gesture_fill(out, n, now_ns()) : 0;
+    return touch_on() ? gesture_fill(out, n, now_ns()) : 0;
 }
 
 // Six-axis details: the current state, at rest unless shaking, fusion off

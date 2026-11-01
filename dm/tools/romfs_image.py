@@ -120,6 +120,33 @@ def read_index(img):   # for tests and checks: {guest path: (is dir, offset, siz
     return out
 
 
+def overlay(img, files):
+    """writes files ({guest path: host path}) over theirs in an image in place: a file of the same size where it is, a resized one after the data, with the
+    index written again after it (offsets and sizes changed); the header names the new index last, so an image cut off partway keeps the old one"""
+    with open(img, 'r+b') as f:
+        magic, ioff, isz, n = HEAD.unpack(f.read(HEAD.size))
+        assert magic == MAGIC
+        f.seek(ioff); raw = bytearray(f.read(isz))
+        pool = raw[n * ENT.size:]
+        e = [list(ENT.unpack_from(raw, k * ENT.size)) for k in range(n)]
+        where, todo = {}, [(0, '')]
+        while todo:
+            k, path = todo.pop()
+            if e[k][4] == 0: todo.extend((c, (path + '/' if path else '') + pool[e[c][2]:e[c][2] + e[c][3]].decode()) for c in range(e[k][0], e[k][0] + e[k][1]))
+            else: where[path] = k
+        end = ioff + isz; moved = False   # after the old index, which stays valid until the header names the new one
+        for rel, host in files.items():
+            k = where.get(rel)
+            if k is None: raise KeyError(rel)
+            data = Path(host).read_bytes()
+            if len(data) == e[k][1]: f.seek(e[k][0]); f.write(data); continue
+            f.seek(end); f.write(data); e[k][0], e[k][1] = end, len(data); end += len(data); moved = True
+        if moved:
+            for k in range(n): ENT.pack_into(raw, k * ENT.size, *e[k])
+            f.seek(end); f.write(raw); f.truncate(); f.flush(); os.fsync(f.fileno())
+            f.seek(0); f.write(HEAD.pack(MAGIC, end, isz, n))
+
+
 ID_MAGIC = 'DMROMFSID1'
 _FNV_OFFSET, _FNV_PRIME, _MASK = 0xcbf29ce484222325, 0x100000001b3, (1 << 64) - 1
 

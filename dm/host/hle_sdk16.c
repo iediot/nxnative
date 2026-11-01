@@ -269,10 +269,39 @@ HLE_FORCE("_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7Displa
 HLE_FORCE("_ZN2nn4diag6detail7PutImplERKNS0_11LogMetaDataEPKcm", "game log → host log", void, h_diag_Put, const void *meta, const char *s, size_t n) {
     (void)meta; while (n && (s[n - 1] == '\n' || s[n - 1] == '\0')) n--; if (n) LOG("[game] %.*s", (int)n, s);
 }
+// The engine's last words: an abort with no message of its own often follows a fatal error the game formatted into a buffer (Unreal: wide characters, handed to its log
+// devices, which reach no host output). The aborting thread's stack and the memory its words point at are searched for UTF-16 and ASCII text (at least 16 printable
+// characters), each run logged once. Reads go through vm_read_overwrite, so a word that is no address costs nothing
+#include <mach/mach.h>
+static int text_at(const uint8_t *b, size_t n, char *out, size_t cap, int wide) {
+    size_t k = 0, i = 0;
+    for (; i + (wide ? 1 : 0) < n && k + 1 < cap; i += wide ? 2 : 1) {
+        unsigned c = wide ? (unsigned)(b[i] | b[i + 1] << 8) : b[i];
+        if (c >= 0x20 && c < 0x7f) out[k++] = (char)c; else break;
+    }
+    out[k] = 0; return (int)k;
+}
+static void abort_texts(uint64_t sp) {
+    static char seen[24][96]; int nseen = 0, shown = 0;
+    for (uint64_t a = sp & ~7ull; a < sp + 0x8000 && shown < 24; a += 8) {
+        uint64_t w; vm_size_t got = 0;
+        if (vm_read_overwrite(mach_task_self(), (vm_address_t)a, 8, (vm_address_t)&w, &got) != KERN_SUCCESS) break;
+        uint8_t buf[512]; got = 0;
+        if (w < 0x10000 || vm_read_overwrite(mach_task_self(), (vm_address_t)w, sizeof buf, (vm_address_t)buf, &got) != KERN_SUCCESS) continue;
+        for (int wide = 1; wide >= 0; wide--) {
+            char t[260]; if (text_at(buf, got, t, sizeof t, wide) < 16) continue;
+            int dup = 0; for (int j = 0; j < nseen; j++) if (!strncmp(seen[j], t, 95)) dup = 1;
+            if (dup) continue;
+            if (nseen < 24) { strncpy(seen[nseen], t, 95); seen[nseen][95] = 0; nseen++; }
+            LOG("abort text (%s at %#llx, from stack +%#llx): %s", wide ? "UTF-16" : "ASCII", (unsigned long long)w, (unsigned long long)(a - sp), t); shown++; break;
+        }
+    }
+}
 // Abort: report the call site (module + offset) and the guest backtrace, then exit
 static void diag_abort(uint32_t res, void *lr) {
     module_t *m = module_of(lr);
     LOG("game called nn::diag abort: Result %#x, call site %s+%#llx", res, m ? m->name : "?", m ? (unsigned long long)((uint8_t *)lr - m->base) : (unsigned long long)(uintptr_t)lr);
+    abort_texts((uint64_t)__builtin_frame_address(1));
     dm_backtrace((uint64_t)__builtin_frame_address(1));
     die("game aborted");
 }

@@ -135,6 +135,45 @@ for off, ob, nb, why in cuts:
     ob, nb = bytes.fromhex(ob), bytes.fromhex(nb)
     assert len(ob) == len(nb) and IMG[off:off + len(ob)] == ob, f'cut original bytes mismatch {off:#x}: {bytes(IMG[off:off + len(ob)]).hex()}'
     IMG[off:off + len(nb)] = nb
+# ExeFS mods: DM_EXEFS_PCHTXT=<file>[:<file>…] names IPSwitch .pchtxt files (the format emulators load from a mod's exefs folder). A file applies only to the module whose
+# build ID its @nsobid line names (the first 16 bytes compared; another module's file is skipped with a note), after the registered cuts and before the rewrite, so the rewriter
+# handles the mod's code like the game's own. Supported: @nsobid, @flag offset_shift (IPSwitch adds it to an entry to get the IPS offset, which counts the 0x100-byte NSO
+# header: an entry is the module address + 0x100 - shift, so with the usual shift of 0x100 the entries are module addresses), @flag print_values /
+# debug_info (ignored), @enabled / @disabled blocks, @stop, // comments and hex-byte entries; anything else (string entries, other flags) stops the rewrite. The applied
+# entries are listed in <name>.pchtxt.tsv
+def pchtxt_apply(path):
+    bid, shift, on, n = None, 0, False, 0
+    for ln, raw in enumerate(open(path, encoding='utf-8-sig'), 1):
+        line = raw.split('//', 1)[0].strip()
+        if not line: continue
+        where = f'{path}:{ln}'
+        if line.startswith('@nsobid-'): bid = line[8:].strip().lower(); continue
+        if bid is None: raise SystemExit(f'[RED] {where}: entries before the @nsobid line')
+        if bid[:32] != BUILD_ID[:len(bid[:32])]: print(f'{NAME}: {path} is for build {bid[:32]}, not {BUILD_ID}: skipped'); return []
+        if line.startswith('@flag'):
+            f = line.split()
+            if len(f) >= 3 and f[1] == 'offset_shift': shift = int(f[2], 0)
+            elif f[1:2] not in (['print_values'], ['debug_info']): raise SystemExit(f'[RED] {where}: unsupported flag {line}')
+            continue
+        if line == '@enabled': on = True; continue
+        if line == '@disabled': on = False; continue
+        if line == '@stop': break
+        if line.startswith('@'): raise SystemExit(f'[RED] {where}: unsupported directive {line}')
+        f = line.split()
+        if len(f) != 2 or not all(c in '0123456789abcdefABCDEF' for c in f[0] + f[1]) or len(f[1]) % 2: raise SystemExit(f'[RED] {where}: not a hex-byte entry: {line}')
+        if not on: continue
+        off, nb = int(f[0], 16) + shift - 0x100, bytes.fromhex(f[1])
+        if not 0 <= off <= len(IMG) - len(nb): raise SystemExit(f'[RED] {where}: offset {off:#x} outside the module image')
+        applied.append((off, bytes(IMG[off:off + len(nb)]).hex(), nb.hex(), os.path.basename(path), ln)); IMG[off:off + len(nb)] = nb; n += 1
+    if bid is None: raise SystemExit(f'[RED] {path}: no @nsobid line')
+    print(f'{NAME}: {path}: {n} entries applied')
+applied = []
+for p in filter(None, os.environ.get('DM_EXEFS_PCHTXT', '').split(':')): pchtxt_apply(p)
+if applied:
+    os.makedirs(outdir, exist_ok=True)
+    with open(os.path.join(outdir, NAME + '.pchtxt.tsv'), 'w') as f:
+        f.write(f'# BUILD_ID\t{BUILD_ID}\n')   # Columns: offset, bytes before, bytes after, file, line
+        for off, ob, nb, src_, ln in applied: f.write(f'{off:#x}\t{ob}\t{nb}\t{src_}\t{ln}\n')
 # Key page indices are fixed; the key page content is written by the loader as "actual key number × 8".
 KEYS = {'K18': 508, 'KTLS': 509, 'KTLR': 510, 'KGATE': 511}
 KEY_INDEX = {k: i for i, k in enumerate(('K18', 'KTLS', 'KTLR', 'KGATE'))}

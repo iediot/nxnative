@@ -102,7 +102,11 @@ uint64_t gate_dispatch(uint64_t ret_addr, uint64_t *regs);
 enum { OBS_UE_MALLOC = 21,                                       // Unreal's FMallocBinned3 constructor call, cut: the object in the register its upper bits name (patch_nso.py, hle_uemalloc.c)
        OBS_REGION_ASK = 22, OBS_REGION_GOT = 23, OBS_REGION_FREE = 24,   // the SDK's address regions, gates the rewriter places by symbol in every sdk (patch_nso.py "Address regions", hle_svc.c)
        OBS_STDALLOC_INIT = 25,                                         // StandardAllocator::Initialize's entry, the same way: the one gate whose callback writes a register (hle_svc.c)
-       OBS_MAX = 26 };
+       OBS_PROJ_ASPECT = 26,                                           // a perspective projection's matrix update: its 16:9 aspect (the float at x0 + the parameter) → the screen's (hle_oe.c)
+       OBS_PROJ_MATRIX = 27,                                           // a projection holding a finished matrix, as it is copied out: if its aspect field is 16:9, the matrix's x scale → the screen's (hle_oe.c)
+       OBS_PROJ_ROW0 = 28,                                             // a function given a row-major projection matrix (the parameter: register, pointer offset / 8 << 5, matrix offset / 16 << 12): a 16:9 one's row 0 → the screen's (hle_oe.c)
+       OBS_PROJ_ORTHO = 29,                                            // a camera update given an orthographic projection: its 16:9 box (top, bottom, left, right floats) → the screen's width, matrix marked dirty (hle_oe.c)
+       OBS_MAX = 30 };
 // A gate number's bits from 8 up are a parameter for its callback (OBS_REGION_GOT: the register that holds the address). Callbacks read the registers; a write to x0–x29 takes
 // effect when the gate returns (entry.S restores them from the frame), which only OBS_STDALLOC_INIT does
 void gate_obs_set(int id, void (*fn)(uint64_t *regs, int param));

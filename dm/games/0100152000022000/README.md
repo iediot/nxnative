@@ -11,6 +11,8 @@ Brought up on the Mac from 4.0.0: boot, the title with its demo race, the Mii pi
 | Setting | Where | Why |
 |---|---|---|
 | `render_cond on` | [`game.tsv`](game.tsv) | the race records `SetRenderEnableConditional` as a course loads: evaluated at replay, as on the GPU (drawn anyway, the same race route at the same frames looked the same; evaluated is NVN's behaviour) |
+| `screen_fill on`, an observation gate for 4.0.1 | `game.tsv`, [`patches.py`](patches.py) | the iPhone picture fills the screen: the perspective projections take the screen's aspect and the 16:9 picture is stretched over it ([Screen fill](#screen-fill)) |
+| `pso_mtl4 on` | `game.tsv` | iPhone pipelines through MTL4Compiler with the pipeline archive made offline ([Pipelines on the iPhone](#pipelines-on-the-iphone)) |
 | 4 GB layout: `mem_reserve 0x100000000`, `mem_alias 0x10000000`, `mem_stack 0x10000000`, `app_pool 0xCD500000` | `game.tsv` | no virtual address memory: the game sets a 3.03 GB heap (pool − 64 MB) in the 3.25 GB heap region |
 | `sys_resource 0x0` | `game.tsv` | the NPDM declares 0 MB of system resource: `IsVirtualAddressMemoryEnabled` is false, as on Horizon |
 | `modules main subsdk0 sdk` | `game.tsv` | every module `main` imports from |
@@ -37,6 +39,19 @@ The game builds Mii heads from the console's MiiModel system data, starting at b
 - **Resolved: an incomplete first command list permanently selected the wrong header layout.** The reproducing test from [PR #331](https://github.com/seedds/nxnative/pull/331) fails on the old host and produces stereo PCM with the fix; the PR author reports sound on the Mac with 4.0.1. Local validation uses synthetic command lists because this machine has no Mario Kart Mac build. See [Incomplete startup lists must not select the command layout](../../../docs/reference/audio.md#incomplete-startup-lists-must-not-select-the-command-layout).
 - **Resolved: no sound; `[RED] audren: no DeviceSink (ID 0x10) in the command list, 0 commands of 0x148 bytes`.** SDK 4's command list has SDK 6's header, but its DeviceSink (`CommandBuffer::GenerateDeviceSinkCommand`, `sdk+0x19e690`) is ID 0xf and 0x130 bytes: device name +0x14, upsample buffer +0x118, input count +0x120, input indices as bytes from +0x124. `capture` takes the one 0x130-byte command with 1 to 6 inputs when there is no 0x148-byte one (`g_sink4` in `hle_audren.c`).
 - **Resolved: the update lock.** Its `AudioRenderSystem::Update` (`sdk+0x19b77c`) locks an `nn::os::MutexType` at +0x1d0, not SDK 16's `SdkMutexType` at +0x1f0. The host took SDK 16's for every SDK before 20, which wrote a lock word into another field and excluded nothing; this was the first game it was plainly wrong for. `update_lock` in `hle_audren.c` now reads it off each SDK's own `Update`.
+
+## Screen fill
+
+Current (4.0.1; Mac with `DM_SCREEN_ASPECT=2.1667`, iPhone not yet tested). With `screen_fill on` the iPhone front end stretches the 16:9 picture over the screen, and an observation gate widens what the game draws into it by the same factor:
+
+- sead's PerspectiveProjection, as in [Super Mario Odyssey](../0100000000010000/README.md): its matrix update (`main+0x61bfa4`, found by its instruction shape: near at +0x98, tan(fovy / 2) and the aspect at +0xac / +0xb0) gets the gate at its entry that turns a 16:9 aspect into the screen's (`OBS_PROJ_ASPECT`). The race, the title and the menus' 3D are wider at their own proportions; the race HUD and the layouts keep theirs.
+- Layouts: `dm/tools/ui_extend.py <RomFS> <out> --aspect 2.1667 --dir /UI` makes the RomFS overlay the NSP script packs (`DM_ROMFS_OVERLAY`). The layouts are Yaz0 SARCs (`.szs`) inside raw SARCs (`UI/cmn/menu.sarc`, `race.sarc`, …) that keep only name hashes, so the tool finds them by their magic and rebuilds the outer archive with the new sizes; 146 layouts in 38 archives, the edges moved by ±140 (a 1280-wide layout screen). Checked on the Mac: title, main menu, Grand Prix menus, character and kart pick, cup pick, loading screen, a race with its HUD at the new edges.
+- Open: "Select a Mii" (first boot) shows its blurred backdrop at 16:9 between black sides; the blur is copied from the title's picture by a path not traced. 4.0.0 has no gate.
+
+## Pipelines on the iPhone
+
+- `pso_mtl4 on` (current, 4.0.1): a 9-minute iPhone 15 Pro Max session without it (the archive was in the IPA, unused: "render pipelines through the MTLDevice") had its long frames, 50–130 ms, on new pipelines compiled in the race, the first time an effect or course appeared.
+- The same session's other slow stretches, about 48 fps for several seconds, were the GPU: 16.6–17.4 ms per frame at 1920 x 1080 docked (12–14 ms in most of the race), about 400 MB of attachment loads and stores per frame, thermal state 1. `DM_NVN_TBDR=1`, which elides many of them, is wrong here (Mac: black regions in the race and the Mii backdrop); open.
 
 ## Rendering
 

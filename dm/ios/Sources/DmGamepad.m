@@ -1,10 +1,11 @@
 // Virtual gamepad (Nintendo button positions) + physical controllers (GameController), handed to the host through dm_input_set and dm_pad_set_player (hle_hid.c, bit layout in dm_input.h).
 //   Two layouts, three in handheld mode; one tap on the layout button at the top centre (labelled with the current layout, "2D" / "3D" / "Tap") goes to the next, and the choice is kept in NSUserDefaults (each game is its own app, so per game); the first launch uses the game profile's pad_layout (DM_GAME_PAD_LAYOUT).
 //   Tap (touch): no control but the layout button, every other touch goes to the game's touch screen; offered only while the game is in handheld mode, the only one in which it reads the touch screen (Balatro, played by touch).
-//   2D (simple): top corners ZL above L (one column), ZR above R likewise, teardrops with the tip toward the screen corner; − and + side by side at the top centre; the left stick in the bottom-left corner (fixed ring, tilt measured from the ring centre, small dead zone);
+//   2D (simple): top corners ZL above L (one column), ZR above R likewise, rounded bumpers (Eden's default Switch layout puts them the same way: ZL at 7 % / 9 %, L at 7 % / 22 %); − and + side by side at the top centre; the left stick in the bottom-left corner (fixed ring, tilt measured from the ring centre, small dead zone);
 //     the A (right) B (bottom) X (top) Y (left) diamond in the bottom-right corner, sliding a finger between keys switches keys. Each bottom corner holds a single control, so it sits close in (reaching halfway into the side safe-area inset).
 //   3D (full, Pro Controller style): everything in 2D (left stick and diamond keep their place and size), plus a D-pad (inward of and below the left stick, 8-way), a right stick that is not drawn
-//     (a touch landing in the right third of the screen on no control holds it: centred where it lands, the centre dragged along once the finger passes the stick radius) and L3 / R3 (small round keys in the top row, inward of ZL / ZR).
+//     (a touch landing in the right third of the screen on no control holds it: centred where it lands, the centre dragged along once the finger passes the stick radius) and L3 / R3 (small round keys
+//     above the inner side of the left stick and of the diamond, near the sticks they click, as Eden places them).
 //     Breath of the Wild crouches with L3 and uses the scope with R3; 3D World and Breath of the Wild turn the camera with the right stick.
 //   Touch-down ownership: locked keys first (shoulders, − / +, the layout button, L3 / R3), then whichever of the diamond, the D-pad and the left stick has the smallest distance / grab radius (the left stick's grab circle borders the D-pad),
 //     then in 3D the right stick for a touch in the right third.
@@ -106,9 +107,9 @@ static void phone_motion_start(UIView *body) {
 
 // ---- Layout constants (in u; x measured from the outer edge, the right half mirrors) ----
 static const CGFloat
-    K_ZL_X = 44, K_ZL_Y = 40, K_ZL_R = 26,          // ZL / ZR: centre from the outer edge and the top, radius
-    K_L_X = 44, K_L_Y = 108, K_L_R = 24,            // L / R: same column as ZL / ZR
-    K_DROP_TIP = 1.45,                              // teardrop tip distance from the centre (times the radius)
+    K_ZL_X = 50, K_ZL_Y = 38, K_ZL_R = 26,          // ZL / ZR: centre from the outer edge and the top, half height (the bumper is K_BUMP_W wide)
+    K_L_X = 50, K_L_Y = 98, K_L_R = 24,             // L / R: same column as ZL / ZR
+    K_BUMP_W = 84,                                  // shoulder bumper width
     K_CORNER_IN = 0.5,                              // how far the bottom-corner controls reach into the side safe-area inset (in landscape there is only the rounded screen corner there; the Dynamic Island is mid-edge)
     K_FACE_X = 81, K_PAD_Y = 82,                    // diamond centre from the outer edge; diamond and stick centre from the bottom (B's lower edge about 5 above it)
     K_FACE_GAP = 50, K_FACE_R = 27,                 // diamond: key distance from the centre, key radius
@@ -124,10 +125,11 @@ static const CGFloat
     K_DPAD_GRAB = 1.3,                              // D-pad grab radius (times the outer edge)
     K_RSTICK_R = 60,                                // right stick (not drawn): radius around its centre, the touch-down point
     K_RSWIPE = 1.0 / 3,                             // right stick area: this fraction of the screen width from the right edge (not in u)
-    K_CLICK_X = 102, K_CLICK_R = 17;                // L3 / R3: centre from the outer edge (level with ZL / ZR), radius
+    K_CLICK_DX = 74, K_CLICK_DY = 98, K_CLICK_R = 17;   // L3 / R3: centre inward of and above the left stick / the diamond, radius
 static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 only in the 3D layout)
 static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 0 = 2D, 1 = 3D, 2 = Tap (DM_GAME_PAD_LAYOUT's numbers)
 int dm_opmode(void);   // hle_oe.c: 0 = handheld
+CGRect dm_game_rect(CGRect b);   // front_ios.m: where the game's picture is in the view
 
 @interface DmGamepad : UIView
 @end
@@ -150,14 +152,29 @@ static void pads_start(void);   // Physical controllers, below
     CALayer *_controls;                            // holds every control layer: hidden while a physical controller is connected (the view itself stays, for game touches)
     BOOL _padOff;                                  // a physical controller is connected: every touch goes to the game
     UITouch *_game[16];                            // touches on the game's touch screen by finger slot
+    CAShapeLayer *_grain[B_N], *_knobGrain, *_swapGrain;   // plain theme leftovers (nil in wood): grain lines, tree rings, the drawn leaf's vein
+    CALayer *_leafArt;                             // wood: the layout button as the app's dm/pad/leaf.png (DM_PAD_ART at build time), when it has one
 }
 
-static UIColor *k_idle, *k_on, *k_line, *k_ringFill, *k_text, *k_textOn;
+// ---- Themes (profile pad_theme, DM_GAME_PAD_THEME) ----
+// plain: translucent white keys. wood: flat honey-wood keys with a thick dark outline and dark labels (no gradients, masks or label shadows: each would be an off-screen
+// pass every frame over the game), and a leaf for the layout button (the app's dm/pad/leaf.png when the build put one there, DM_PAD_ART; otherwise a drawn one); nearly opaque so they read as
+// objects, so the whole pad is drawn at K_PAD_OPACITY, touched or not (a pressed key still shows by its darker wood, sunk onto its shadow). DM_PAD_OPACITY=<0.05..1> in Documents/env.txt
+// changes the level (plain keeps its own translucent colours at full layer opacity)
+static BOOL g_wood;
+static const CGFloat K_PAD_OPACITY = 0.22;
+static UIColor *k_idle, *k_on, *k_line, *k_ringFill, *k_text, *k_textOn, *k_grain, *k_leaf, *k_leafOn, *k_leafLine, *k_shadow;
 static CAShapeLayer *shape(CALayer *parent) {
     CAShapeLayer *l = [CAShapeLayer layer];
-    l.fillColor = k_idle.CGColor; l.strokeColor = k_line.CGColor; l.lineWidth = 1.5;
-    l.shadowColor = UIColor.blackColor.CGColor; l.shadowOpacity = 0.2; l.shadowRadius = 3; l.shadowOffset = CGSizeMake(0, 1);
+    l.fillColor = k_idle.CGColor; l.strokeColor = k_line.CGColor; l.lineWidth = g_wood ? 3 : 1.5; l.lineJoin = kCALineJoinRound;
+    l.shadowColor = k_shadow.CGColor; l.shadowOpacity = g_wood ? 0.5 : 0.2; l.shadowRadius = g_wood ? 1 : 3; l.shadowOffset = CGSizeMake(0, g_wood ? 3 : 1);
+    l.allowsGroupOpacity = NO;   // the wood theme sets the opacity of the controls' parent: each layer then blends on its own, no off-screen group pass
     [parent addSublayer:l]; return l;
+}
+static CAShapeLayer *grain(CALayer *key) {   // wood only: grain lines inside a key, under its label
+    CAShapeLayer *g = [CAShapeLayer layer];
+    g.fillColor = nil; g.strokeColor = k_grain.CGColor; g.lineWidth = 1.2; g.lineCap = kCALineCapRound;
+    [key insertSublayer:g atIndex:0]; return g;
 }
 static CATextLayer *label(CALayer *parent, NSString *s) {
     CATextLayer *t = [CATextLayer layer];
@@ -178,20 +195,44 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
         static dispatch_once_t once;
         dispatch_once(&once, ^{
             // each colour carries its own low opacity instead of lowering the whole view's alpha (that would add an off-screen pass for the full-screen layer)
-            k_idle = [UIColor colorWithWhite:1 alpha:0.14]; k_on = [UIColor colorWithWhite:1 alpha:0.45]; k_line = [UIColor colorWithWhite:1 alpha:0.38];
-            k_ringFill = [UIColor colorWithWhite:1 alpha:0.06]; k_text = [UIColor colorWithWhite:1 alpha:0.6]; k_textOn = [UIColor colorWithWhite:0 alpha:0.7];
+            g_wood = DM_GAME_PAD_THEME == 1;
+            #define RGBA(r, g, b, a) [UIColor colorWithRed:(r) / 255.0 green:(g) / 255.0 blue:(b) / 255.0 alpha:(a)]
+            if (g_wood) {   // flat honey wood with a dark walnut outline and dark labels, pressed = the darker heartwood with cream labels; a fresh green leaf
+                k_idle = RGBA(236, 196, 134, 1); k_on = RGBA(170, 118, 66, 1); k_line = RGBA(74, 44, 20, 1);
+                k_ringFill = RGBA(120, 80, 42, 0.35); k_text = RGBA(74, 44, 20, 1); k_textOn = RGBA(255, 244, 222, 1);
+                k_grain = RGBA(236, 196, 146, 0.42); k_leaf = RGBA(118, 178, 92, 0.92); k_leafOn = RGBA(84, 140, 64, 0.97); k_leafLine = RGBA(52, 98, 40, 0.9); k_shadow = RGBA(60, 34, 14, 1);
+            } else {
+                k_idle = [UIColor colorWithWhite:1 alpha:0.14]; k_on = [UIColor colorWithWhite:1 alpha:0.45]; k_line = [UIColor colorWithWhite:1 alpha:0.38];
+                k_ringFill = [UIColor colorWithWhite:1 alpha:0.06]; k_text = [UIColor colorWithWhite:1 alpha:0.6]; k_textOn = [UIColor colorWithWhite:0 alpha:0.7];
+                k_grain = k_leaf = k_leafOn = k_leafLine = k_idle; k_shadow = UIColor.blackColor;
+            }
+            #undef RGBA
         });
-        _controls = [CALayer layer]; [self.layer addSublayer:_controls];
+        _controls = [CALayer layer]; _controls.allowsGroupOpacity = NO; [self.layer addSublayer:_controls];
         _ring = shape(_controls); _ring.fillColor = k_ringFill.CGColor;
         _knob = shape(_controls);
         CAShapeLayer *in = [CAShapeLayer layer]; in.fillColor = nil; in.strokeColor = k_line.CGColor; in.lineWidth = 1.5;   // inner ring of the knob
         [_knob addSublayer:in];
+
         static NSString *const names[B_N] = {@"A", @"B", @"X", @"Y", @"L3", @"R3", @"L", @"R", @"ZL", @"ZR", @"+", @"−"};
         for (int b = 0; b < B_N; b++) {
             _key[b] = shape(_controls);
             if (names[b]) _label[b] = label(_key[b], names[b]);   // the D-pad arms carry no label
+
         }
         _swap = shape(_controls); _swapLabel = label(_swap, @"");
+        if (g_wood) {
+            NSString *art = [NSBundle.mainBundle pathForResource:@"leaf" ofType:@"png" inDirectory:@"dm/pad"];
+            UIImage *img = art ? [UIImage imageWithContentsOfFile:art] : nil;
+            if (img) { _leafArt = [CALayer layer]; _leafArt.contents = (id)img.CGImage; _leafArt.contentsGravity = kCAGravityResizeAspect; [_controls addSublayer:_leafArt];
+                       _swap.fillColor = _swap.strokeColor = UIColor.clearColor.CGColor; _swap.shadowOpacity = 0; LOG("front end: the layout button is the app's leaf picture (dm/pad/leaf.png)"); }
+            else { _swap.fillColor = k_leaf.CGColor; _swap.strokeColor = k_leafLine.CGColor; _swapGrain = grain(_swap); _swapGrain.strokeColor = k_leafLine.CGColor; }
+        }
+        if (g_wood) {   // one constant opacity for the whole pad, on the parent with group opacity off: each layer blends on its own, no off-screen pass
+            const char *op = getenv("DM_PAD_OPACITY"); CGFloat o = op ? fmin(fmax(atof(op), 0.05), 1) : K_PAD_OPACITY;
+            _controls.opacity = (float)o;
+            LOG("front end: the wood pad is drawn at opacity %.2f (DM_PAD_OPACITY)", o);
+        }
         NSNumber *saved = [NSUserDefaults.standardUserDefaults objectForKey:k_layout_key];
         int l = saved ? (int)saved.integerValue : DM_GAME_PAD_LAYOUT;
         if (l == 2 && dm_opmode() != 0) l = 0;   // Tap only in handheld mode (env.txt's DM_OPMODE may have changed it)
@@ -243,7 +284,9 @@ static BOOL isClick(int b) { return b == B_LS || b == B_RS; }
 - (CGPoint)dropCenter:(int)b { CGRect s = self.safe; CGFloat u = self.u; BOOL z = b == B_ZL || b == B_ZR;
     return side(s, b == B_ZR || b == B_R, (z ? K_ZL_X : K_L_X) * u, CGRectGetMinY(s) + (z ? K_ZL_Y : K_L_Y) * u); }
 - (CGFloat)dropR:(int)b { return (b == B_ZL || b == B_ZR ? K_ZL_R : K_L_R) * self.u; }
-- (CGPoint)clickCenter:(int)b { CGRect s = self.safe; CGFloat u = self.u; return side(s, b == B_RS, K_CLICK_X * u, CGRectGetMinY(s) + K_ZL_Y * u); }
+- (CGPoint)clickCenter:(int)b { CGFloat u = self.u; CGPoint c = b == B_RS ? self.faceCenter : self.stickHome;   // inward of and above the stick it clicks (the diamond for R3)
+    return CGPointMake(c.x + (b == B_RS ? -K_CLICK_DX : K_CLICK_DX) * u, c.y - K_CLICK_DY * u); }
+- (CGRect)dropRect:(int)b { CGPoint c = [self dropCenter:b]; CGFloat w = K_BUMP_W * self.u, h = 2 * [self dropR:b]; return CGRectMake(c.x - w / 2, c.y - h / 2, w, h); }
 - (CGRect)pillRect:(int)b { CGRect s = self.safe; CGFloat u = self.u, w = K_PILL_W * u, h = K_PILL_H * u;
     CGPoint c = CGPointMake(CGRectGetMidX(s) + (b == B_PLUS ? K_PILL_DX : -K_PILL_DX) * u, CGRectGetMinY(s) + K_PILL_Y * u);   // − on the left, + on the right
     return CGRectMake(c.x - w / 2, c.y - h / 2, w, h); }
@@ -254,13 +297,16 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
     CGFloat u = self.u;
     for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i];
         if (fullOnly(b) && !_full) continue;
-        BOOL hit = isDrop(b) ? dist(p, [self dropCenter:b]) <= [self dropR:b] * 1.35
+        BOOL hit = isDrop(b) ? CGRectContainsPoint(CGRectInset([self dropRect:b], -10 * u, -10 * u), p)
                  : isClick(b) ? dist(p, [self clickCenter:b]) <= K_CLICK_R * u * 1.35
                  : CGRectContainsPoint(CGRectInset([self pillRect:b], -8 * u, -8 * u), p);
         if (hit) return b; }
     return -1;
 }
-- (BOOL)inSwap:(CGPoint)p { return dist(p, self.swapCenter) <= K_SWAP_R * self.u * 1.6; }
+- (BOOL)inSwap:(CGPoint)p {   // the leaf picture takes touches over its whole box (a few points more), as drawn; the drawn leaf a circle around it
+    if (_leafArt) return CGRectContainsPoint(CGRectInset(_leafArt.frame, -4 * self.u, -4 * self.u), p);
+    return dist(p, self.swapCenter) <= K_SWAP_R * self.u * 1.6;
+}
 - (uint64_t)faceAt:(CGPoint)p {   // keys under the finger in the diamond (between two keys both count)
     uint64_t m = 0; CGFloat r = self.faceR * 1.25;
     for (int b = B_A; b <= B_Y; b++) if (dist(p, [self facePos:b]) <= r) m |= 1ull << b;
@@ -317,10 +363,8 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 // Touches no control takes (all of them while a physical controller is connected) go to the game's touch screen, normalized on the 16:9 picture that front_ios.m
 // centres in the screen: Super Mario Galaxy's pointer in handheld mode (profile op_mode). The host reports them only in handheld mode, as on the Switch (hle_hid.c touch_read)
 - (void)pushGame {
-    CGRect b = self.bounds; CGFloat w = b.size.width, h = b.size.height;
+    CGRect r = dm_game_rect(self.bounds); CGFloat w = r.size.width, h = r.size.height, x0 = r.origin.x, y0 = r.origin.y;   // the picture: 16:9 centred, or the whole screen (screen fill)
     if (w <= 0 || h <= 0) return;
-    if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
-    CGFloat x0 = (b.size.width - w) / 2, y0 = (b.size.height - h) / 2;
     dm_touch t[16]; int n = 0;
     for (int i = 0; i < 16; i++) if (_game[i]) {
         CGPoint p = [_game[i] locationInView:self];
@@ -385,16 +429,6 @@ static CGFloat dist(CGPoint a, CGPoint b) { return hypot(a.x - b.x, a.y - b.y); 
 
 // ---- Shapes ----
 static CGPathRef circlePath(CGPoint c, CGFloat r) { return CGPathCreateWithEllipseInRect(CGRectMake(c.x - r, c.y - r, 2 * r, 2 * r), NULL); }
-static CGPathRef dropPath(CGPoint c, CGFloat r, CGFloat tipAngle, CGFloat round) {   // teardrop: circle + two tangents meeting at the tip, tip slightly rounded
-    CGFloat d = r * K_DROP_TIP, th = acos(r / d);
-    CGPoint tip = CGPointMake(c.x + d * cos(tipAngle), c.y + d * sin(tipAngle));
-    CGPoint p1 = CGPointMake(c.x + r * cos(tipAngle + th), c.y + r * sin(tipAngle + th)), p2 = CGPointMake(c.x + r * cos(tipAngle - th), c.y + r * sin(tipAngle - th));
-    CGMutablePathRef p = CGPathCreateMutable();
-    CGPathMoveToPoint(p, NULL, p2.x, p2.y);
-    CGPathAddArcToPoint(p, NULL, tip.x, tip.y, p1.x, p1.y, round);
-    CGPathAddArc(p, NULL, c.x, c.y, r, tipAngle + th, tipAngle - th + 2 * M_PI, false);
-    CGPathCloseSubpath(p); return p;
-}
 static CGPathRef armPath(CGPoint c, CGFloat R, CGFloat w, CGFloat in, CGFloat angle, CGFloat round) {   // one D-pad arm: an upward pentagon (tip toward the centre) rotated by angle around the centre
     CGPoint v[5] = {{-w, -R}, {w, -R}, {w, -(in + w)}, {0, -in}, {-w, -(in + w)}};
     CGFloat cs = cos(angle), sn = sin(angle);
@@ -405,13 +439,61 @@ static CGPathRef armPath(CGPoint c, CGFloat R, CGFloat w, CGFloat in, CGFloat an
     CGPathCloseSubpath(p); return p;
 }
 static void setPath(CAShapeLayer *l, CGPathRef p) { l.path = p; l.shadowPath = p; CGPathRelease(p); }
+static CTFontRef labelFont(CGFloat fs) {   // wood: the system font's rounded design, heavy, for a soft hand-made look
+    if (!g_wood) return CTFontCreateUIFontForLanguage(kCTFontUIFontEmphasizedSystem, fs, NULL);
+    UIFont *f = [UIFont systemFontOfSize:fs weight:UIFontWeightHeavy];
+    UIFontDescriptor *d = [f.fontDescriptor fontDescriptorWithDesign:UIFontDescriptorSystemDesignRounded];
+    return (CTFontRef)CFBridgingRetain(d ? [UIFont fontWithDescriptor:d size:fs] : f);
+}
 static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
-    CTFontRef f = CTFontCreateUIFontForLanguage(kCTFontUIFontEmphasizedSystem, fs, NULL);
+    CTFontRef f = labelFont(fs);
     t.font = f; t.fontSize = fs;
     CGFloat h = CTFontGetAscent(f) + CTFontGetDescent(f) + CTFontGetLeading(f), w = fs * 3;
     t.frame = CGRectMake(c.x - w / 2, c.y - h / 2, w, h);
     CFRelease(f);
 }
+
+// Wood grain: a few gently waving lines across a key, inside the circle (c, r) it is drawn on, kept clear of the edge; seed varies the waves from key to key
+static CGPathRef grainPath(CGPoint c, CGFloat r, int seed) {
+    CGMutablePathRef p = CGPathCreateMutable();
+    static const CGFloat rows[] = {-0.52, -0.08, 0.4};
+    for (int i = 0; i < 3; i++) {
+        CGFloat y = rows[i] * r + (seed % 3 - 1) * 0.06 * r, half = sqrt(fmax(r * r - y * y, 0)) * 0.72, a = (((seed + i) & 1) ? 1 : -1) * 0.09 * r;
+        CGPathMoveToPoint(p, NULL, c.x - half, c.y + y);
+        CGPathAddCurveToPoint(p, NULL, c.x - half / 3, c.y + y - a, c.x + half / 3, c.y + y + a, c.x + half, c.y + y);
+    }
+    return p;
+}
+static CGPathRef ringsPath(CGPoint c, CGFloat r) {   // tree rings: three slightly off-centre circles
+    CGMutablePathRef p = CGPathCreateMutable();
+    static const CGFloat k[] = {0.2, 0.42, 0.78};
+    for (int i = 0; i < 3; i++) { CGFloat q = r * k[i]; CGPathAddEllipseInRect(p, NULL, CGRectMake(c.x - q + 0.04 * r * i, c.y - q - 0.03 * r * i, 2 * q, 2 * q)); }
+    return p;
+}
+// The layout button as a leaf: two curves from the stem end to the tip, tilted up to the right, with a short stem; vein = the midrib and two side veins
+static CGPoint rot(CGPoint c, CGFloat x, CGFloat y, CGFloat a) { return CGPointMake(c.x + x * cos(a) - y * sin(a), c.y + x * sin(a) + y * cos(a)); }
+static CGPathRef leafPath(CGPoint c, CGFloat r) {
+    CGFloat a = -M_PI / 6, L = r * 1.35, W = r * 1.05;
+    CGPoint base = rot(c, -L, 0, a), tip = rot(c, L, 0, a);
+    CGMutablePathRef p = CGPathCreateMutable();
+    CGPathMoveToPoint(p, NULL, base.x, base.y);
+    CGPoint c1 = rot(c, -L * 0.3, -W * 1.25, a), c2 = rot(c, L * 0.55, -W * 0.9, a), c3 = rot(c, L * 0.55, W * 0.9, a), c4 = rot(c, -L * 0.3, W * 1.25, a);
+    CGPathAddCurveToPoint(p, NULL, c1.x, c1.y, c2.x, c2.y, tip.x, tip.y);
+    CGPathAddCurveToPoint(p, NULL, c3.x, c3.y, c4.x, c4.y, base.x, base.y);
+    CGPathCloseSubpath(p);
+    return p;
+}
+static CGPathRef veinPath(CGPoint c, CGFloat r) {
+    CGFloat a = -M_PI / 6, L = r * 1.35;
+    CGMutablePathRef p = CGPathCreateMutable();
+    CGPoint s0 = rot(c, -L - r * 0.45, r * 0.18, a), base = rot(c, -L, 0, a), tip = rot(c, L * 0.8, 0, a);
+    CGPathMoveToPoint(p, NULL, s0.x, s0.y); CGPathAddLineToPoint(p, NULL, base.x, base.y);   // the stem
+    CGPathMoveToPoint(p, NULL, base.x, base.y); CGPathAddLineToPoint(p, NULL, tip.x, tip.y);
+    for (int i = 0; i < 2; i++) { CGFloat x = -L * 0.25 + i * L * 0.55; for (int sgn = -1; sgn <= 1; sgn += 2) {
+        CGPoint m = rot(c, x, 0, a), e = rot(c, x + L * 0.28, sgn * r * 0.55, a); CGPathMoveToPoint(p, NULL, m.x, m.y); CGPathAddLineToPoint(p, NULL, e.x, e.y); } }
+    return p;
+}
+static void setGrain(CAShapeLayer *g, CGPathRef p) { if (!g) { CGPathRelease(p); return; } g.path = p; CGPathRelease(p); }
 
 - (void)layoutSubviews {
     [super layoutSubviews];
@@ -419,26 +501,35 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
     CGFloat u = self.u;
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     _controls.frame = self.layer.bounds;
-    for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b]; setPath(_key[b], circlePath(c, self.faceR)); placeLabel(_label[b], c, 20 * u); }
+    for (int b = B_A; b <= B_Y; b++) { CGPoint c = [self facePos:b]; setPath(_key[b], circlePath(c, self.faceR)); placeLabel(_label[b], c, 20 * u); setGrain(_grain[b], grainPath(c, self.faceR, b)); }
     for (int i = 0; i < (int)(sizeof k_btns / sizeof *k_btns); i++) { int b = k_btns[i];
         if (isDrop(b)) {
-            BOOL right = b == B_ZR || b == B_R; CGPoint c = [self dropCenter:b];
-            setPath(_key[b], dropPath(c, [self dropR:b], right ? -M_PI_4 : -3 * M_PI_4, 4 * u)); placeLabel(_label[b], c, 16 * u);   // tip toward the near top corner
+            CGRect rc = [self dropRect:b]; CGFloat rr = rc.size.height * 0.42;   // a rounded bumper
+            setPath(_key[b], CGPathCreateWithRoundedRect(rc, rr, rr, NULL)); placeLabel(_label[b], CGPointMake(CGRectGetMidX(rc), CGRectGetMidY(rc)), 18 * u);
+            setGrain(_grain[b], grainPath(CGPointMake(CGRectGetMidX(rc), CGRectGetMidY(rc)), [self dropR:b], b));
         } else if (isClick(b)) {
-            CGPoint c = [self clickCenter:b]; setPath(_key[b], circlePath(c, K_CLICK_R * u)); placeLabel(_label[b], c, 13 * u);
+            CGPoint c = [self clickCenter:b]; setPath(_key[b], circlePath(c, K_CLICK_R * u)); placeLabel(_label[b], c, 13 * u); setGrain(_grain[b], ringsPath(c, K_CLICK_R * u));
         } else {
             CGRect rc = [self pillRect:b];
             setPath(_key[b], CGPathCreateWithRoundedRect(rc, rc.size.height / 2, rc.size.height / 2, NULL)); placeLabel(_label[b], CGPointMake(CGRectGetMidX(rc), CGRectGetMidY(rc)), 18 * u);
+            CGMutablePathRef gp = CGPathCreateMutable(); CGFloat x0 = CGRectGetMinX(rc) + rc.size.height * 0.45, x1 = CGRectGetMaxX(rc) - rc.size.height * 0.45;   // two plank lines
+            for (int k = -1; k <= 1; k += 2) { CGFloat y = CGRectGetMidY(rc) + k * rc.size.height * 0.24; CGPathMoveToPoint(gp, NULL, x0, y); CGPathAddLineToPoint(gp, NULL, x1, y); }
+            setGrain(_grain[b], gp);
         }
     }
     static const struct { int b; CGFloat angle; } arms[] = {{B_UP, 0}, {B_RIGHT, M_PI_2}, {B_DOWN, M_PI}, {B_LEFT, -M_PI_2}};   // the same arm in 90° steps
     for (int i = 0; i < 4; i++) setPath(_key[arms[i].b], armPath(self.dpadCenter, self.dpadR, K_ARM_W * u, K_ARM_IN * u, arms[i].angle, 6 * u));
-    CGPoint sc = self.swapCenter; setPath(_swap, circlePath(sc, K_SWAP_R * u)); placeLabel(_swapLabel, sc, 12 * u);
+    CGPoint sc = self.swapCenter; setPath(_swap, g_wood ? leafPath(sc, K_SWAP_R * u) : circlePath(sc, K_SWAP_R * u)); placeLabel(_swapLabel, sc, 12 * u);
+    if (_leafArt) { CGFloat lr = K_SWAP_R * u * 1.75; _leafArt.frame = CGRectMake(sc.x - lr, sc.y - lr, 2 * lr, 2 * lr); }
+    setGrain(_swapGrain, veinPath(sc, K_SWAP_R * u)); _swapLabel.hidden = g_wood;   // the leaf carries no text: its vein would cross it; the layout shows in the controls themselves
     setPath(_ring, circlePath(self.stickHome, [self stickR:0]));
     CGFloat k = K_KNOB_R * u; _knob.bounds = CGRectMake(0, 0, 2 * k, 2 * k);
     setPath(_knob, circlePath(CGPointMake(k, k), k));
-    CAShapeLayer *in = (CAShapeLayer *)_knob.sublayers.firstObject; CGPathRef ip = circlePath(CGPointMake(k, k), k * 0.62);
-    in.frame = _knob.bounds; in.path = ip; CGPathRelease(ip);
+    CAShapeLayer *in = nil;   // the inner ring: the knob's shape sublayer (the wood theme's gradient fill sits before it)
+    for (CALayer *l in _knob.sublayers) if ([l isKindOfClass:CAShapeLayer.class]) { in = (CAShapeLayer *)l; break; }
+    CGPathRef ip = circlePath(CGPointMake(k, k), k * 0.62);
+    in.frame = _knob.bounds; in.path = ip; CGPathRelease(ip); in.hidden = g_wood;
+    if (_knobGrain) { _knobGrain.frame = _knob.bounds; setGrain(_knobGrain, ringsPath(CGPointMake(k, k), k)); }
     [CATransaction commit];
     [self refresh];
 }
@@ -448,7 +539,10 @@ static void placeLabel(CATextLayer *t, CGPoint c, CGFloat fs) {
     [CATransaction begin]; [CATransaction setDisableActions:YES];
     for (int b = 0; b < B_N; b++) { BOOL on = (all >> b) & 1;
         _key[b].fillColor = (on ? k_on : k_idle).CGColor; _label[b].foregroundColor = (on ? k_textOn : k_text).CGColor; }
-    _swap.fillColor = (_swapHeld ? k_on : k_idle).CGColor; _swapLabel.foregroundColor = (_swapHeld ? k_textOn : k_text).CGColor;
+    if (!_leafArt) _swap.fillColor = (g_wood ? (_swapHeld ? k_leafOn : k_leaf) : (_swapHeld ? k_on : k_idle)).CGColor; _swapLabel.foregroundColor = (_swapHeld ? k_textOn : k_text).CGColor;   // with the picture the drawn leaf stays clear (it showed as a smaller leaf over it)
+    if (g_wood) for (int b = 0; b < B_N; b++) { BOOL on = (all >> b) & 1; _key[b].shadowOffset = CGSizeMake(0, on ? 0.5 : 3);   // a pressed key sinks onto its shadow, darker, its gloss gone
+        }
+    if (_leafArt) _leafArt.opacity = _swapHeld ? 0.7f : 1.0f;
     CGPoint h = self.stickHome, o = [self knobOffset:0];
     _knob.position = CGPointMake(h.x + o.x, h.y + o.y); _knob.fillColor = (_stick[0] ? k_on : k_idle).CGColor;
     [CATransaction commit];

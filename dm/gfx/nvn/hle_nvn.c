@@ -893,8 +893,28 @@ NVN(nvnCommandBufferCopyBufferToBuffer, void, NVNcommandBuffer *c, NVNbufferAddr
     memcpy(p + 8, &src, 8); memcpy(p + 16, &dst, 8); memcpy(p + 24, &nn, 8);
 }
 // uniform update: the data is copied into command memory at record time (NVN semantics: the caller may modify the original data after recording) and written into the buffer at submit
+// Inline uniform update scan (diagnostic, DM_UPD_SCAN=<frame>): in that frame every update's data is searched for a projection-shaped 4x4 (as DM_UBO_SCAN in nvn_mtl.m) and for
+// the float DM_UBO_FIND names, each logged with the game code that called (the return address). For finding where a game uploads the projection a screen-fill gate has to reach
+static uint64_t g_frame;
+static void upd_scan(const void *data, size_t n, ptrdiff_t off, const void *ret) {
+    static long target = -2; static int vset; static uint32_t vbits;
+    if (target == -2) { const char *e = getenv("DM_UPD_SCAN"); target = e ? atol(e) : -1; e = getenv("DM_UBO_FIND"); vset = e != NULL; if (e) vbits = (uint32_t)strtoul(e, NULL, 16); }
+    if (target < 0 || (long)g_frame != target) return;
+    module_t *m = module_of(ret); uint64_t at = m ? (uint64_t)((const uint8_t *)ret - m->base) : (uint64_t)(uintptr_t)ret;
+    const float *f0 = data; const uint32_t *u = data; size_t nf = n / 4;
+    for (size_t k = 0; k + 16 <= nf; k++) {
+        const float *f = f0 + k;
+        int rowm = f[12] == 0 && f[13] == 0 && fabsf(f[14]) == 1 && f[15] == 0, colm = f[3] == 0 && f[7] == 0 && fabsf(f[11]) == 1 && f[15] == 0;
+        if ((rowm || colm) && isfinite(f[0]) && isfinite(f[5]) && fabsf(f[0]) > 0.05f && fabsf(f[1]) < 1e-3f && fabsf(f[4]) < 1e-3f && f[10] != 0)
+            LOG("[updscan] from %s+%#llx: offset %#lx +%#zx %s m00 %.4f m11 %.4f ratio %.4f", m ? m->name : "?", (unsigned long long)at, (long)off, k * 4, rowm ? "row-major" : "column-major", f[0], f[5], fabsf(f[5] / f[0]));
+    }
+    if (vset) for (size_t k = 0; k < nf; k++) if (u[k] == vbits)
+        LOG("[updscan] from %s+%#llx: offset %#lx +%#zx holds the value; next %.4f %.4f %.4f %.4f %.4f %.4f %.4f", m ? m->name : "?", (unsigned long long)at, (long)off, k * 4,
+            k + 1 < nf ? f0[k + 1] : 0.f, k + 2 < nf ? f0[k + 2] : 0.f, k + 3 < nf ? f0[k + 3] : 0.f, k + 4 < nf ? f0[k + 4] : 0.f, k + 5 < nf ? f0[k + 5] : 0.f, k + 6 < nf ? f0[k + 6] : 0.f, k + 7 < nf ? f0[k + 7] : 0.f);
+}
 NVN(nvnCommandBufferUpdateUniformBuffer, void, NVNcommandBuffer *c, NVNbufferAddress buf, size_t bufsz, ptrdiff_t off, size_t n, const void *data) {
     (void)bufsz;
+    upd_scan(data, n, off, __builtin_return_address(0));
     uint32_t sz = (uint32_t)(24 + n);
     uint8_t *p = cmd_alloc(CB(c), sz); put_hdr(p, OP_UPDATE_UB, (sz + 7) & ~7u);
     uint64_t dst = buf + off, nn = n; memcpy(p + 8, &dst, 8); memcpy(p + 16, &nn, 8); memcpy(p + 24, data, n);
@@ -1324,6 +1344,8 @@ static uint64_t g_frame;
 static uint64_t g_acq_wait_ns, g_pq_wait_ns;   // Accumulated display-link wait / wait for the present queue to return inside acquire, recorded per frame at present (there can be several acquires within one frame)
 static uint64_t g_fs_start, g_fs_wait;   // frame step (fstep_tick): when the first acquire after a present returned (the frame's start, 0 = none yet), and its pacing wait
 uint64_t dm_nvn_frame_count(void) { return g_frame; }
+static _Atomic uint64_t g_frame_ns;   // guest clock at the latest present (vi::ListFrameHistory)
+uint64_t dm_nvn_frame_ns(void) { return g_frame_ns; }
 extern uint64_t g_t0_ns;   // Host process start point (main.c; same base as the UIMSG timestamps)
 NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsync *s, int *idx) {
     win_t *o = (win_t *)w;
@@ -1386,7 +1408,7 @@ static void dump_frame(void) {
     if (g_tsv) fflush(g_tsv);
     if (g_frame <= (uint64_t)nframes) LOG("[nvn] %s %llu: %u functions %llu calls |%s", g_frame ? "frame" : "init", g_frame, nfn, total, line);
     else if (g_frame % 300 == 0) LOG("[nvn] frame %llu: %u functions %llu calls", g_frame, nfn, total);
-    g_frame++; cs_dump();
+    g_frame++; g_frame_ns = guest_ns(); cs_dump();
     // Every 300 frames read resident memory and hand it to the graphics layer to print the memory readout line (mtl_mem_stat, low frequency, capped). Memory watchdog: when resident memory exceeds the cap, log a failure and exit on its own. On by default only on the Mac host (24 GB: runaway host memory
     // drags the whole machine into a kernel panic, which happened twice with other programs on the same machine), or set for tests with DM_MEM_CAP_GB=<integer>; the player's iOS app has no cap (exiting before the system kills it is pointless and only adds another kind of crash)
     if (g_frame % 300 == 0) { task_vm_info_data_t vi; mach_msg_type_number_t cnt = TASK_VM_INFO_COUNT;

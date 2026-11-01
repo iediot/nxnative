@@ -13,7 +13,23 @@ On the Mac: a new game through Tom Nook's counter (name entry on the game's own 
 | 4 GB layout: `mem_reserve 0x100000000`, `mem_alias 0x10000000`, `mem_stack 0x10000000`, `app_pool 0xCD500000` | `game.tsv` | 256 MB in front + 256 MB alias region + 256 MB stack region + 3.25 GB heap region |
 | `mem_used 0x7a00000` (122 MB) | `game.tsv` | the rewritten modules are larger than the default 64 MB of used memory (`main` alone is 63 MB of text and 15 MB of bss); the NSP script's guess after the rewrite, which leaves a 3.09 GB heap |
 | `pad_layout full` | `game.tsv` | the 3D layout: the D-pad holds the tool ring and the right stick turns the camera |
+| `pad_theme wood` | `game.tsv` | the iPhone pad in flat honey-wood keys with a thick dark outline and dark labels (no gradients, masks or label shadows, which cost an off-screen pass every frame), rounded ZL / L and ZR / R bumpers in the corner columns, L3 / R3 beside the sticks, a leaf for the layout button (a picture from `DM_PAD_ART` at build time, not in the repository); nearly opaque, so the whole pad is drawn at a constant 22% opacity (`DM_PAD_OPACITY`) |
+| `screen_fill on`, an observation gate for 3.0.3, the layout overlay | `game.tsv`, [`patches.py`](patches.py) | the iPhone picture fills the screen ([Screen fill](#screen-fill)) |
+| `touch_docked on` | `game.tsv` | the game reads the touch screen only where the Switch's own UI takes taps (its software keyboard: names, chat, design titles); its menus, map and Nook Phone are not touch-driven on the Switch either. Docked keeps the 1920x1080 picture (handheld draws 1280x720), so touches reach it in console mode |
 | `shader_groups` `/Shader/` `/System/` `/Effect/` `/Model/` `/Layout/` `/Swkbd/` | `game.tsv` | see [Files and shaders](#files-and-shaders) |
+
+## Screen fill
+
+Current (3.0.3; Mac with `DM_SCREEN_ASPECT=2.1667` and the phone's save; iPhone reports below). The gate in [`patches.py`](patches.py) widens sead's PerspectiveProjection; the layouts are extended by `dm/tools/ui_extend.py <RomFS> <out> --aspect 2.1667 --screen` into a RomFS overlay, packed after the 60 fps mod's files (`DM_ROMFS_OVERLAY=<romfs60>:<layouts>`).
+
+- Reported from the iPhone and resolved in the tool (checked on the Mac with the phone's save where reachable):
+  - The passport (`LProfileBtn`) slid right and off the screen: it is a part that declares a 1920 x 1080 screen and that `LProfileBtnList` places at x 0 and 1919 (the carousel's next page). A part some layout places off centre is no longer extended, and nothing wholly off the screen moves.
+  - The Nook Miles cards (`MenuPointTopQuest`, five null groups `N_Quest_00`–`04` each holding one part) lost the first one off the edge: like siblings now include null groups holding the same kinds of panes.
+  - The crafting bench's L / R labels (`WorkBench` `N_R_*` / `N_L_*`) left the category tabs: an item at the end of a central bar (a picture or window spanning the centre, three times wider than tall, in a group narrower than the screen, level with it, within 4 % of the width) stays with it. Boxes that hold what lies inside them now include any picture or window that stays, not only centre-spanning ones.
+  - The circle wipe (`WipeCircle`) left slivers of the island at the sides: its side covers hang from the circle's edges and are widened three times with their width keys (that build predated the change).
+  - The DIY recipes "Pockets" count (`MenuRecipe` `N_HaveNum_00`) went to the right: the group sits exactly on the screen's right edge (x 960, read as anchored there) and is aligned by the game at run time with a "Storage" count placed past the edge in the file. Resolved with `--keep N_HaveNum_00`; the rules cannot tell it from a group pinned to the edge.
+  - Edge items under the Dynamic Island: they move out with `--move-aspect 1.95` (93 units instead of 210), into the iPhone's landscape safe area with a margin, while backgrounds widen to the whole screen.
+- Open: the crafting bench and other menus not reached on the Mac are checked on the iPhone. A 3.0.3 iPhone session with `pso_mtl4 on` and the first wood-pad redesign (gradient fills masked to each key, label shadows) ran at about 40 fps in both modes, GPU-bound (16–17 ms per frame, thermal state 2 throughout); both were taken out and the cause is not separated yet.
 
 ## Rewriter
 

@@ -13,6 +13,13 @@ name	Super Mario Bros. Wonder
 ipa	SMBWMobile.ipa
 app_category	public.app-category.action-games
 
+# iPhone: the 16:9 picture stretched over the screen, the projections widened by the gates in patches.py (README.md, Screen fill)
+screen_fill	on
+
+# iPhone: render pipelines through MTL4Compiler, with the pipeline archive made offline, the prepare step and the hybrid pipelines, as on the Mac by default. Without them an
+# iPhone 15 Pro Max log (1.2.1) had draws waiting for their pipelines whenever a new effect appeared, up to 1.9 s of waits in one 300-frame window (README.md, Shaders)
+pso_mtl4	on
+
 # ---- Versions ----
 # build <version> <display version> <module>=<build ID>...: the NSP script accepts only these builds (fixed addresses do not hold on other builds); the host reports the display version by main's build ID
 build	v0	1.0.0	main=cd6e42aee7934f4d8393cd43893ae25e	sdk=3053b22935e32ddf15ef81997603e5c2

@@ -117,6 +117,13 @@ def header(g):
     if sf not in ('bfttf', 'ttf'): sys.exit(f'{g.id}: shared_font must be bfttf or ttf: {sf}')
     pl = g.get('pad_layout', 'simple')   # the virtual gamepad's first layout (DmGamepad.m; afterwards whatever the player switched to in game is kept): simple = 2D, full = 3D (D-pad, right stick, L3 / R3),
     if pl not in ('simple', 'full', 'touch'): sys.exit(f'{g.id}: pad_layout must be simple, full or touch: {pl}')   # touch = Tap (no control: every touch goes to the game's touch screen)
+    pt = g.get('pad_theme', 'plain')   # the virtual gamepad's look (DmGamepad.m): plain = translucent white, wood = warm wood keys with cream labels, drawn at a constant low opacity
+    if pt not in ('plain', 'wood'): sys.exit(f'{g.id}: pad_theme must be plain or wood: {pt}')
+    sfl = g.get('screen_fill', 'off')   # the picture stretched over a screen wider than 16:9, for a game whose projections the projection aspect gate reaches (front_ios.m, hle_oe.c): on / off
+    if sfl not in ('on', 'off'): sys.exit(f'{g.id}: screen_fill must be on or off: {sfl}')
+    fuv = g.get('fill_uv_scale', '')   # with screen fill: <vertex shader key>:<uniform slot>:<byte offset>[,…], a texture x scale that maps a pane onto the 16:9 frame (nvn_mtl.m fill_uv)
+    for e in [x for x in fuv.split(',') if x]:
+        if len(e.split(':')) != 3: sys.exit(f'{g.id}: fill_uv_scale entries are <key>:<slot>:<offset>: {e}')
     sks = g.get('shader_key_skip', '')   # control-section bytes the shader keys hash as zeros, <offset>+<length> (hle_nvn.c keys_hash, shader_split.py key_ctl; Batman: Arkham Knight: GLSLC's compile information, 0x770+0x78)
     m = re.fullmatch(r'(0x[0-9a-fA-F]+|\d+)\+(0x[0-9a-fA-F]+|\d+)', sks) if sks else None
     if sks and (not m or not 0x30 <= int(m[1], 0) or not 0 < int(m[2], 0) or int(m[1], 0) + int(m[2], 0) > 0x880 or (int(m[1], 0) < 0x760 and int(m[1], 0) + int(m[2], 0) > 0x700)):   # not over +0x700..+0x75f, the code area and compute fields the tools read
@@ -139,6 +146,8 @@ def header(g):
     om = g.get('op_mode', 'console')   # the operation mode reported at start (hle_oe.c dm_opmode; DM_OPMODE overrides): console = docked, handheld = touch screen in use (Super Mario Galaxy's pointer)
     if om not in ('console', 'handheld'): sys.exit(f'{g.id}: op_mode must be console or handheld: {om}')
     if pl == 'touch' and om != 'handheld': sys.exit(f'{g.id}: pad_layout touch needs op_mode handheld (the touch screen reaches the game only in handheld mode)')
+    td = g.get('touch_docked', 'off')   # touch points reach the game in console mode too (hle_hid.c touch_read; DM_TOUCH_DOCKED overrides): on / off
+    if td not in ('on', 'off'): sys.exit(f'{g.id}: touch_docked must be on or off: {td}')
     pm = g.get('perf_mode', 'follow')   # the performance mode reported (hle_oe.c): follow = the operation mode's (Boost docked, Normal handheld), boost = Boost always
     if pm not in ('follow', 'boost'): sys.exit(f'{g.id}: perf_mode must be follow or boost: {pm}')
     dmo = g.get('depth_mode', 'gl')   # the NVN depth mode the game sets, for the pipeline archive made offline (dm/gfx/tools/pso_offline.py; the host follows the game at run time): gl / zero
@@ -177,7 +186,11 @@ def header(g):
          f'#define DM_GAME_ENC_THREAD {int(et == "on")}',
          *([f'#define DM_GAME_SHARED_FONT_TTF {int(sf == "ttf")}'] if g.get('shared_font', '') else []),   # without the key the host decides by the SDK version (hle_sdk16.c)
          f'#define DM_GAME_PAD_LAYOUT {("simple", "full", "touch").index(pl)}',
+         f'#define DM_GAME_PAD_THEME {("plain", "wood").index(pt)}',
+         f'#define DM_GAME_SCREEN_FILL {int(sfl == "on")}',
+         f'#define DM_GAME_FILL_UV_SCALE {q(fuv)}',
          f'#define DM_GAME_OPMODE {int(om == "console")}',
+         f'#define DM_GAME_TOUCH_DOCKED {int(td == "on")}',
          f'#define DM_GAME_PERF_BOOST {int(pm == "boost")}',
          f'#define DM_GAME_TEX_FLUSH_UPLOAD {int(tfu == "on")}',
          f'#define DM_GAME_SHADER_KEY_SKIP_OFF {sko:#x}', f'#define DM_GAME_SHADER_KEY_SKIP_LEN {skl:#x}',
