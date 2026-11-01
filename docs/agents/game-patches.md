@@ -114,7 +114,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 - **`build` → `engine`**, rendering, blocked: one build on hand (3.0.3) and no other sead game's main extracted to fingerprint the function against, judgement: PerspectiveProjection matrix update: a 16:9 aspect → the screen's. The function is sead's, which other Nintendo EPD games ship: a fingerprint of it could place the gate in any of them
 
 - **3.0.3 `main`** `ff1d1c05…` ([patches.py:8](../../dm/games/01006F8002326000/patches.py#L8))
-  - gate 45082 at `+0x37e5968`: PerspectiveProjection matrix update entry: a 16:9 aspect at x0 + 0xb0 → the screen's (OBS_PROJ_ASPECT)
+  - gate 45083 at `+0x37e5968`: PerspectiveProjection matrix update entry: a 16:9 aspect at x0 + 0xb0 → the screen's (OBS_PROJ_ASPECT)
 
 ### ASTRAL CHAIN
 
@@ -391,7 +391,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 - **`build` → `engine`**, rendering, blocked: compiled differently in each game (no exact byte match); a fingerprint needs the instruction shape reviewed across more sead builds; 4.0.0 not checked, judgement: PerspectiveProjection matrix update: a 16:9 aspect → the screen's. The function is sead's, the same as in Super Mario Odyssey, Animal Crossing: New Horizons and Super Mario Bros. Wonder: a fingerprint could place the gate in any sead game
 
 - **4.0.1 `main`** `158c0c73…` ([patches.py:6](../../dm/games/0100152000022000/patches.py#L6))
-  - gate 45082 at `+0x61bfa4`: PerspectiveProjection matrix update entry: a 16:9 aspect at x0 + 0xb0 → the screen's (OBS_PROJ_ASPECT)
+  - gate 45083 at `+0x61bfa4`: PerspectiveProjection matrix update entry: a 16:9 aspect at x0 + 0xb0 → the screen's (OBS_PROJ_ASPECT)
 
 ### Monster Hunter Rise
 
@@ -499,8 +499,8 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 - **`build` → `engine`**, rendering, blocked: the two games compile it differently (no exact byte match); a fingerprint needs the instruction shape reviewed across more sead builds, judgement: PerspectiveProjection matrix update and the courses' view-projection build: a 16:9 projection → the screen's. The function is sead's, the same as Animal Crossing: New Horizons' (vtable layout and the function's first instructions): a fingerprint could place the gate in any sead game
 
 - **1.2.1 `main`** `ff773e90…` ([patches.py:6](../../dm/games/010015100B514000/patches.py#L6))
-  - gate 45082 at `+0x3c0178`: PerspectiveProjection matrix update entry: a 16:9 aspect at x0 + 0xb0 → the screen's (OBS_PROJ_ASPECT)
-  - gate 269525021 at `+0x119d80`: camera update entry: the OrthoProjection at x1, a 16:9 box at +0xa0 → the screen's width, dirty at +8 (OBS_PROJ_ORTHO)
+  - gate 45083 at `+0x3c0178`: PerspectiveProjection matrix update entry: a 16:9 aspect at x0 + 0xb0 → the screen's (OBS_PROJ_ASPECT)
+  - gate 269525022 at `+0x119d80`: camera update entry: the OrthoProjection at x1, a 16:9 box at +0xa0 → the screen's width, dirty at +8 (OBS_PROJ_ORTHO)
 
 ### Super Mario Odyssey
 
@@ -509,7 +509,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 - **`build` → `engine`**, rendering, blocked: compiled differently in each game (no exact byte match); a fingerprint needs the instruction shape reviewed across more sead builds, judgement: PerspectiveProjection matrix update: a 16:9 aspect → the screen's. The function is sead's, the same as in Animal Crossing: New Horizons and Super Mario Bros. Wonder: a fingerprint could place the gate in any sead game
 
 - **1.4.1 `main`** `b424be15…` ([patches.py:6](../../dm/games/0100000000010000/patches.py#L6))
-  - gate 45082 at `+0x9683c0`: PerspectiveProjection matrix update entry: a 16:9 aspect at x0 + 0xb0 → the screen's (OBS_PROJ_ASPECT)
+  - gate 45083 at `+0x9683c0`: PerspectiveProjection matrix update entry: a 16:9 aspect at x0 + 0xb0 → the screen's (OBS_PROJ_ASPECT)
 
 ### Super Smash Bros. Ultimate
 

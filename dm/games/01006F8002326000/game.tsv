@@ -28,7 +28,7 @@ fill_uv_scale	17dccd27ad609e8b_b:0:0x60
 touch_docked	on
 
 # one frame per display refresh whatever interval the game sets: the host's counterpart of the 60 FPS SpeedFix mod's SDK enabler (README.md, Frame rate). Without the mod's
-# code and parameter patches (DM_EXEFS_PCHTXT, DM_ROMFS_OVERLAY) the game then runs at double speed: its logic counts frames
+# code and parameter patches (built in with --mods) the game then runs at double speed: its logic counts frames
 present_interval	display
 
 # ---- Versions ----
