@@ -24,6 +24,10 @@ void front_screen_match(int fps);
 // title and done of total shown over the game's view (a dark screen, the title, a bar and a count), updated on each call; title NULL hides it. Any thread; the front end switches to its main
 // thread and does not block. Nothing is shown without a window
 void front_progress(const char *title, long done, long total);
+// An app that hosts the game view and has a look of its own (a launcher holding several games) can draw that progress itself: set before the game starts, with a window the hook gets each
+// front_progress call's values on the front end's main thread (title NULL when the step ends; the title is valid during the call) and the front end shows no screen of its own.
+// NULL (the default): the front end's screen above
+extern void (*front_progress_hook)(const char *title, long done, long total);
 #include <stdint.h>
 // Width / height of the screen the game fills (iOS front_ios.m with the profile's screen_fill on and a screen wider than 16:9); 0 = keep the game's 16:9 (the host's weak default, the Mac).
 // Read once, by the projection aspect gate (hle_oe.c), from the game thread
@@ -37,6 +41,9 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 // Early start of host loading (main.c): reading the NSO / relocation / forced takeover / prefetch start are moved to a background thread, in parallel with the front end (UIKit launch chain, Metal view);
 // the dm_main / main called afterwards waits for it to finish. For call timing and preconditions see the comments in main.c (set DM_ROMFS and the other environment variables and the cwd first; arguments identical item by item to those of the later main).
 void dm_host_preload_start(int argc, char **argv);
+// iOS: names the loaded image that carries the game's embedded module sections (loader.c map_image, nro_pieces), for an app that links them into a framework it dlopens from its signed bundle.
+// Set it before dm_host_preload_start, once: the loader reads it on the preload thread and at every later NRO load. Not set, they are read from the executable
+void dm_set_game_image_header(const void *mh);
 
 // Touchscreen (implemented by the host's hle_touch.c; called by the iOS / Mac front end): whenever the set of touch points changes (down / move / up / cancel) the whole set is pushed once; n = 0 = all lifted.
 // id = finger slot number 0–15 (the lowest free slot on down, unchanged until up; used directly as finger_id); x / y = normalized coordinates [0,1) on the output frame, origin at top left.
